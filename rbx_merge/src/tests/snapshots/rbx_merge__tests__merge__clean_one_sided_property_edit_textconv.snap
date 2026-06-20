@@ -6,13 +6,16 @@ expression: "textconv(&merged, Some(&path))?"
 DataModel
 
   IntValue "Value=1234567"
+    Attributes = {}
     Tags = []
     Value = Int64(1234567)
 
   IntValue "Value=1337"
+    Attributes = {}
     Tags = []
     Value = Int64(9001)
 
   IntValue "Value=-7654321"
+    Attributes = {}
     Tags = []
     Value = Int64(-7654321)

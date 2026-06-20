@@ -125,8 +125,8 @@ fn merged_text(base: &[u8], ours: &[u8], theirs: &[u8], path: &Path) -> Option<S
     merged_bytes(base, ours, theirs, path).map(|bytes| semantic_text(&bytes, path))
 }
 
-/// A side put through the merge's own normalization (e.g. dropping all-empty
-/// `Attributes`), via a self-merge. This is the right yardstick for one-sided
+/// A side put through the merge's own normalization (e.g. child reordering and
+/// ref rewriting), via a self-merge. This is the right yardstick for one-sided
 /// invariants: the merge of a one-sided change equals the *normalized* side,
 /// not the raw side.
 fn normalized(side: &[u8], path: &Path) -> String {

@@ -169,7 +169,6 @@ fn materialize_from_side(
     let properties = node
         .properties
         .iter()
-        .filter(|(_, value)| !is_empty_attributes(value))
         .map(|(&key, value)| {
             (
                 key,
@@ -189,10 +188,6 @@ fn materialize_from_side(
         properties,
         referent,
     }
-}
-
-fn is_empty_attributes(value: &Variant) -> bool {
-    matches!(value, Variant::Attributes(attributes) if attributes.is_empty())
 }
 
 fn deletion_decision(
@@ -611,10 +606,6 @@ fn merge_property_value(
 
 fn keep_or_delete(value: Option<&Variant>, source: ValueSource) -> PropertyMerge {
     match value {
-        // An all-empty `Attributes` map is equivalent to having none. Drop it so
-        // the merge normalizes it identically whether the instance was modified
-        // (handled by `merge_attributes`) or added (handled here).
-        Some(Variant::Attributes(attributes)) if attributes.is_empty() => PropertyMerge::Delete,
         Some(value) => PropertyMerge::Keep(MergedProperty {
             value: value.clone(),
             source,
@@ -696,14 +687,13 @@ fn merge_attributes(
         }
     }
 
-    if merged.is_empty() {
-        PropertyMerge::Delete
-    } else {
-        PropertyMerge::Keep(MergedProperty {
-            value: Variant::Attributes(merged),
-            source: ValueSource::Merged,
-        })
-    }
+    // Preserve the `Attributes` property even when the merge empties it: every
+    // side that reaches here carried the property, and an empty map is a
+    // meaningful value to keep rather than silently drop.
+    PropertyMerge::Keep(MergedProperty {
+        value: Variant::Attributes(merged),
+        source: ValueSource::Merged,
+    })
 }
 
 fn merge_scalar<T>(base: Option<T>, ours: Option<T>, theirs: Option<T>) -> Option<T>

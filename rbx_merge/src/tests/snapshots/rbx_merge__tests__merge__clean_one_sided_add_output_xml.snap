@@ -6,6 +6,7 @@ expression: "common::xml_string(&merged)?"
   <Item class="Folder" referent="0">
     <Properties>
       <string name="Name">Folder</string>
+      <BinaryString name="AttributesSerialize"></BinaryString>
       <BinaryString name="Tags"></BinaryString>
     </Properties>
     <Item class="StringValue" referent="1">

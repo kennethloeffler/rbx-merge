@@ -6,6 +6,7 @@ expression: "textconv(&merged, Some(&path))?"
 DataModel
 
   Folder "Folder"
+    Attributes = {}
     Tags = []
 
     StringValue "Merge Added"

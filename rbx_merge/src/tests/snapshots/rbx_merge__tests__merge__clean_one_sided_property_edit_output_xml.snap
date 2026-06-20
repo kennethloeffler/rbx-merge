@@ -6,6 +6,7 @@ expression: "common::xml_string(&merged)?"
   <Item class="IntValue" referent="0">
     <Properties>
       <string name="Name">Value=1234567</string>
+      <BinaryString name="AttributesSerialize"></BinaryString>
       <BinaryString name="Tags"></BinaryString>
       <int64 name="Value">1234567</int64>
     </Properties>
@@ -13,6 +14,7 @@ expression: "common::xml_string(&merged)?"
   <Item class="IntValue" referent="1">
     <Properties>
       <string name="Name">Value=1337</string>
+      <BinaryString name="AttributesSerialize"></BinaryString>
       <BinaryString name="Tags"></BinaryString>
       <int64 name="Value">9001</int64>
     </Properties>
@@ -20,6 +22,7 @@ expression: "common::xml_string(&merged)?"
   <Item class="IntValue" referent="2">
     <Properties>
       <string name="Name">Value=-7654321</string>
+      <BinaryString name="AttributesSerialize"></BinaryString>
       <BinaryString name="Tags"></BinaryString>
       <int64 name="Value">-7654321</int64>
     </Properties>

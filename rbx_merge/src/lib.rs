@@ -19,8 +19,8 @@ use thiserror::Error;
 use crate::format::{decode_file, encode_file};
 use crate::identity::build_identities;
 use crate::merge_graph::{
-    assign_child_order, build_weak_dom, detect_ref_targets, detect_unique_id_collisions,
-    merge_semantic_graph, scan_unknown_properties,
+    assign_child_order, build_weak_dom, detect_dropped_references, detect_ref_targets,
+    detect_unique_id_collisions, merge_semantic_graph, scan_unknown_properties,
 };
 use crate::render::render_textconv;
 use crate::semantic::{SemanticDom, SemanticInputs};
@@ -217,6 +217,7 @@ pub fn merge_files(
         });
     }
 
+    detect_dropped_references(&graph, &identities, &doms, &mut diagnostics);
     scan_unknown_properties(&graph, &mut diagnostics);
 
     let dom = build_weak_dom(&graph, &identities, &doms)?;

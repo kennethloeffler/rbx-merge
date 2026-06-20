@@ -11,7 +11,7 @@ use ustr::{Ustr, ustr};
 
 use crate::Error;
 use crate::conflict::{Conflict, ConflictKind, DisplayValue};
-use crate::diagnostics::{Diagnostic, unknown_property_diagnostic};
+use crate::diagnostics::{Diagnostic, dropped_reference_diagnostic, unknown_property_diagnostic};
 use crate::identity::{IdentitySet, MergeEntry, MergeNodeId};
 use crate::render::display_variant;
 use crate::semantic::{
@@ -464,6 +464,10 @@ fn merge_property_value(
 
 fn keep_or_delete(value: Option<&Variant>, source: ValueSource) -> PropertyMerge {
     match value {
+        // An all-empty `Attributes` map is equivalent to having none. Drop it so
+        // the merge normalizes it identically whether the instance was modified
+        // (handled by `merge_attributes`) or added (handled here).
+        Some(Variant::Attributes(attributes)) if attributes.is_empty() => PropertyMerge::Delete,
         Some(value) => PropertyMerge::Keep(MergedProperty {
             value: value.clone(),
             source,
@@ -906,21 +910,7 @@ pub(crate) fn detect_ref_targets(
     doms: &SemanticInputs<'_>,
     conflicts: &mut Vec<Conflict>,
 ) {
-    let mut deleted: HashMap<Ref, MergeNodeId> = HashMap::new();
-    for (&merge_id, entry) in &identities.entries {
-        if graph.nodes.contains_key(&merge_id) {
-            continue;
-        }
-        if let Some(base_id) = entry.base {
-            deleted.insert(doms.base.node(base_id).source_ref, merge_id);
-        }
-        if let Some(ours_id) = entry.ours {
-            deleted.insert(doms.ours.node(ours_id).source_ref, merge_id);
-        }
-        if let Some(theirs_id) = entry.theirs {
-            deleted.insert(doms.theirs.node(theirs_id).source_ref, merge_id);
-        }
-    }
+    let deleted = dropped_referents(graph, identities, doms);
     if deleted.is_empty() {
         return;
     }
@@ -983,6 +973,98 @@ fn deleted_identity_path(entry: &MergeEntry, doms: &SemanticInputs<'_>) -> Strin
         doms.theirs.path(id)
     } else {
         "<unknown>".to_owned()
+    }
+}
+
+/// Map every source referent of a dropped identity (one absent from the merged
+/// graph) back to that identity, across all three sides.
+fn dropped_referents(
+    graph: &MergedGraph,
+    identities: &IdentitySet,
+    doms: &SemanticInputs<'_>,
+) -> HashMap<Ref, MergeNodeId> {
+    let mut deleted = HashMap::new();
+    for (&merge_id, entry) in &identities.entries {
+        if graph.nodes.contains_key(&merge_id) {
+            continue;
+        }
+        if let Some(base_id) = entry.base {
+            deleted.insert(doms.base.node(base_id).source_ref, merge_id);
+        }
+        if let Some(ours_id) = entry.ours {
+            deleted.insert(doms.ours.node(ours_id).source_ref, merge_id);
+        }
+        if let Some(theirs_id) = entry.theirs {
+            deleted.insert(doms.theirs.node(theirs_id).source_ref, merge_id);
+        }
+    }
+    deleted
+}
+
+/// The single referent a property points at, if it is a non-nil `Ref` or an
+/// object-valued `Content`.
+fn single_ref_target(value: &Variant) -> Option<Ref> {
+    match value {
+        Variant::Ref(referent) if referent.is_some() => Some(*referent),
+        Variant::Content(content) => content.as_object(),
+        _ => None,
+    }
+}
+
+/// Report references that pointed at an instance in the base but resolve to
+/// nothing in the merged output because the target was deleted — the
+/// complement of [`detect_ref_targets`]. There the surviving (non-deleting)
+/// side's reference wins and dangles; here the deleting side's nilled reference
+/// wins and the link is silently lost. Intentional repoints (the merged value
+/// points at a live instance) are not reported.
+pub(crate) fn detect_dropped_references(
+    graph: &MergedGraph,
+    identities: &IdentitySet,
+    doms: &SemanticInputs<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let deleted = dropped_referents(graph, identities, doms);
+    if deleted.is_empty() {
+        return;
+    }
+
+    for (&merge_id, node) in &graph.nodes {
+        let Some(entry) = identities.entries.get(&merge_id) else {
+            continue;
+        };
+        let Some(base_id) = entry.base else {
+            continue;
+        };
+        for (&key, base_value) in &doms.base.node(base_id).properties {
+            let Some(base_ref) = single_ref_target(base_value) else {
+                continue;
+            };
+            let Some(&target) = deleted.get(&base_ref) else {
+                continue;
+            };
+            // The base referenced a now-dropped instance through `key`. In a
+            // clean merge the merged value cannot still point at the dropped
+            // target (that path is a RefTarget conflict), so a value present
+            // here is an intentional repoint; only a missing/nil value is a
+            // silent drop.
+            if node
+                .properties
+                .get(&key)
+                .and_then(|property| single_ref_target(&property.value))
+                .is_none()
+            {
+                let target_path = identities
+                    .entries
+                    .get(&target)
+                    .map(|target_entry| deleted_identity_path(target_entry, doms))
+                    .unwrap_or_else(|| "<unknown>".to_owned());
+                diagnostics.push(dropped_reference_diagnostic(
+                    graph_path(graph, merge_id),
+                    key.as_str(),
+                    &target_path,
+                ));
+            }
+        }
     }
 }
 

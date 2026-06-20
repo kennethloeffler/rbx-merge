@@ -59,3 +59,24 @@ fn ref_to_deleted_target_conflicts() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn ref_nilled_by_deletion_is_reported() -> Result<()> {
+    // `ours` deletes the referenced target; `theirs` leaves it alone. The merge
+    // is clean (the deleter's nilled reference wins), but the lost link is
+    // reported rather than dropped silently.
+    let path = common::model_path("ref-child", "xml.rbxmx");
+    let base = common::read_fixture(&path)?;
+    let ours = common::edit_fixture(&path, |dom| common::delete_instance(dom, "Ref Target"))?;
+
+    let result = common::merge_fixture_bytes(&base, &ours, &base, &path, MergeOptions::default())?;
+    let (_, diagnostics) = common::expect_clean(result);
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "dropped_reference"),
+        "expected a dropped_reference diagnostic, got {diagnostics:#?}"
+    );
+    Ok(())
+}

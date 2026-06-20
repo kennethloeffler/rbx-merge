@@ -37,6 +37,21 @@ pub(crate) fn unknown_property_diagnostic(path: String, class: &str, property: &
     }
 }
 
+/// A reference that pointed at an instance in the base but resolves to nothing
+/// in the merged output because that target was deleted. The reference is not a
+/// conflict — nilling it is a reasonable outcome — but it is reported so the
+/// drop is visible rather than silent.
+pub(crate) fn dropped_reference_diagnostic(path: String, property: &str, target: &str) -> Diagnostic {
+    Diagnostic {
+        severity: DiagnosticSeverity::Warning,
+        code: "dropped_reference".to_owned(),
+        message: format!(
+            "reference {property:?} was dropped to nil because its target {target} was deleted in the merge"
+        ),
+        path: Some(path),
+    }
+}
+
 /// An added instance on the `theirs` side that could have matched more than one
 /// added instance on `ours`. Matching is deterministic and conservative, so the
 /// instance is treated as a distinct addition; this records that a guess was

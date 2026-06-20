@@ -380,12 +380,9 @@ fn merge_properties(
                     dom,
                     id,
                     Some(key.as_str()),
-                    base_value
-                        .map(|value| display_variant(value, ValueSource::Base, identities, doms)),
-                    ours_value
-                        .map(|value| display_variant(value, ValueSource::Ours, identities, doms)),
-                    theirs_value
-                        .map(|value| display_variant(value, ValueSource::Theirs, identities, doms)),
+                    base_value.map(|value| display_variant(value, ValueSource::Base, doms)),
+                    ours_value.map(|value| display_variant(value, ValueSource::Ours, doms)),
+                    theirs_value.map(|value| display_variant(value, ValueSource::Theirs, doms)),
                 ));
             }
         }
@@ -873,10 +870,10 @@ pub(crate) fn detect_unique_id_collisions(graph: &MergedGraph, conflicts: &mut V
     }
 }
 
-/// Reconstruct a `/`-delimited path for a node in the merged graph.
+/// Reconstruct a Roblox-style dotted path for a node in the merged graph.
 fn graph_path(graph: &MergedGraph, id: MergeNodeId) -> String {
     if id == graph.root {
-        return "/".to_owned();
+        return "<root>".to_owned();
     }
     let mut parts = Vec::new();
     let mut current = Some(id);
@@ -891,7 +888,7 @@ fn graph_path(graph: &MergedGraph, id: MergeNodeId) -> String {
         current = node.parent;
     }
     parts.reverse();
-    format!("/{}", parts.join("/"))
+    parts.join(".")
 }
 
 /// Detect references that survive into the merged graph but point at an

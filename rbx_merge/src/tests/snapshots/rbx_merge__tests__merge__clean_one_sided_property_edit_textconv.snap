@@ -2,21 +2,14 @@
 source: rbx_merge/src/tests/merge.rs
 expression: "textconv(&merged, Some(&path))?"
 ---
-# Roblox semantic textconv (XML model (.rbxmx))
-/ [DataModel] id=path:/
-  Children:
-    0: /Value=1234567 [IntValue] id=path:/Value=1234567
-    1: /Value=1337 [IntValue] id=path:/Value=1337
-    2: /Value=-7654321 [IntValue] id=path:/Value=-7654321
-  /Value=1234567 [IntValue] id=path:/Value=1234567
-    Properties:
-      Tags = []
-      Value = Int64(1234567)
-  /Value=1337 [IntValue] id=path:/Value=1337
-    Properties:
-      Tags = []
-      Value = Int64(9001)
-  /Value=-7654321 [IntValue] id=path:/Value=-7654321
-    Properties:
-      Tags = []
-      Value = Int64(-7654321)
+# rbx-merge — XML model (.rbxmx)
+DataModel
+  IntValue "Value=1234567"
+    Tags = []
+    Value = Int64(1234567)
+  IntValue "Value=1337"
+    Tags = []
+    Value = Int64(9001)
+  IntValue "Value=-7654321"
+    Tags = []
+    Value = Int64(-7654321)

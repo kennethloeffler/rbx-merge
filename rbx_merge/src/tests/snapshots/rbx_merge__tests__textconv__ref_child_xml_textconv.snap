@@ -2,18 +2,12 @@
 source: rbx_merge/src/tests/textconv.rs
 expression: text
 ---
-# Roblox semantic textconv (XML model (.rbxmx))
-/ [DataModel] id=path:/
-  Children:
-    0: /Value [ObjectValue] id=path:/Value
-  /Value [ObjectValue] id=path:/Value
-    Properties:
-      Attributes:
+# rbx-merge — XML model (.rbxmx)
+DataModel
+  ObjectValue "Value"
+    Attributes = {}
+    Tags = []
+    Value = → Value.Ref Target
+    Folder "Ref Target"
+      Attributes = {}
       Tags = []
-      Value = Ref(internal:MergeNodeId(2))
-    Children:
-      0: /Value/Ref Target [Folder] id=path:/Value/Ref Target
-    /Value/Ref Target [Folder] id=path:/Value/Ref Target
-      Properties:
-        Attributes:
-        Tags = []

@@ -5,7 +5,7 @@ expression: conflicts
 [
     Conflict {
         kind: PropertyValue,
-        path: "/Value=1337",
+        path: "Value=1337",
         class: "IntValue",
         name: "Value=1337",
         property: Some(

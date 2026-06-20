@@ -104,9 +104,11 @@ impl SemanticDom {
             .unwrap_or_else(|| panic!("missing semantic node {id:?}"))
     }
 
+    /// A Roblox-style dotted path to an instance (`Workspace.Folder.Part`). The
+    /// synthetic root renders as `<root>`.
     pub(crate) fn path(&self, id: NodeId) -> String {
         if id == self.root {
-            return "/".to_owned();
+            return "<root>".to_owned();
         }
 
         let mut parts = Vec::new();
@@ -120,14 +122,7 @@ impl SemanticDom {
             current = node.parent;
         }
         parts.reverse();
-        format!("/{}", parts.join("/"))
-    }
-
-    pub(crate) fn identity_label(&self, id: NodeId) -> String {
-        match self.unique_id(id) {
-            Some(unique_id) => format!("uid:{unique_id}"),
-            None => format!("path:{}", self.path(id)),
-        }
+        parts.join(".")
     }
 
     pub(crate) fn unique_id(&self, id: NodeId) -> Option<UniqueId> {

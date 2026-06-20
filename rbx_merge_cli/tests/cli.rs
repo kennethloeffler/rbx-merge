@@ -130,6 +130,6 @@ fn textconv_prints_semantic_text() {
         .expect("run textconv");
     assert!(output.status.success());
     let rendered = String::from_utf8_lossy(&output.stdout);
-    assert!(rendered.contains("[IntValue]"), "got:\n{rendered}");
+    assert!(rendered.contains("IntValue \"Counter\""), "got:\n{rendered}");
     assert!(rendered.contains("Value = Int64(42)"), "got:\n{rendered}");
 }

@@ -1,35 +1,32 @@
 //! Human-readable rendering: per-value display strings and the deterministic
 //! `textconv` tree output used for diffs.
+//!
+//! The tree uses indentation alone to convey nesting (no repeated paths) and
+//! renders instances as `ClassName "Name"` with their properties beneath them.
+//! References are shown as Roblox-style dotted paths to their target.
 
-use rbx_types::{ContentType, Variant};
+use rbx_types::{ContentType, Ref, Variant};
 
 use crate::format::FileFormat;
-use crate::identity::IdentitySet;
 use crate::semantic::{NodeId, SemanticDom, SemanticInputs, ValueSource, bytes_summary};
+
+const INDENT: &str = "  ";
 
 pub(crate) fn display_variant(
     value: &Variant,
     source: ValueSource,
-    identities: &IdentitySet,
     doms: &SemanticInputs<'_>,
 ) -> String {
     match value {
         Variant::String(value) => format!("{value:?}"),
         Variant::Float32(value) => format!("Float32({value:?})"),
         Variant::Float64(value) => format!("Float64({value:?})"),
-        Variant::Ref(referent) => {
-            format!("Ref({})", ref_display(*referent, source, identities, doms))
-        }
+        Variant::Ref(referent) => ref_display(*referent, source, doms),
         Variant::Content(content) => match content.value() {
-            ContentType::Object(referent) => {
-                format!(
-                    "Content::Object({})",
-                    ref_display(*referent, source, identities, doms)
-                )
-            }
-            ContentType::Uri(uri) => format!("Content::Uri({uri:?})"),
-            ContentType::None => "Content::None".to_owned(),
-            _ => "Content::<unknown>".to_owned(),
+            ContentType::Object(referent) => ref_display(*referent, source, doms),
+            ContentType::Uri(uri) => format!("content {uri:?}"),
+            ContentType::None => "content none".to_owned(),
+            _ => "content <unknown>".to_owned(),
         },
         Variant::Attributes(attributes) => {
             let mut out = String::from("{");
@@ -41,7 +38,7 @@ pub(crate) fn display_variant(
                 first = false;
                 out.push_str(key);
                 out.push_str(": ");
-                out.push_str(&display_variant(value, source, identities, doms));
+                out.push_str(&display_variant(value, source, doms));
             }
             out.push('}');
             out
@@ -60,94 +57,72 @@ pub(crate) fn display_variant(
     }
 }
 
-fn ref_display(
-    referent: rbx_types::Ref,
-    source: ValueSource,
-    identities: &IdentitySet,
-    doms: &SemanticInputs<'_>,
-) -> String {
+fn ref_display(referent: Ref, source: ValueSource, doms: &SemanticInputs<'_>) -> String {
     if referent.is_none() {
-        return "nil".to_owned();
+        return "→ nil".to_owned();
     }
-    match identities.resolve_ref(source, referent, doms) {
-        Some(id) => format!("internal:{id:?}"),
-        None => format!("external:{referent}"),
+    let dom = match source {
+        ValueSource::Base => Some(doms.base),
+        ValueSource::Ours => Some(doms.ours),
+        ValueSource::Theirs => Some(doms.theirs),
+        ValueSource::Merged => None,
+    };
+    match dom.and_then(|dom| dom.ref_to_node.get(&referent).map(|&node| dom.path(node))) {
+        Some(path) => format!("→ {path}"),
+        None => "→ <external>".to_owned(),
     }
 }
 
 pub(crate) fn render_textconv(dom: &SemanticDom, format: FileFormat) -> String {
-    let identities = single_dom_identities(dom);
     let doms = SemanticInputs {
         base: dom,
         ours: dom,
         theirs: dom,
     };
     let mut out = String::new();
-    out.push_str(&format!("# Roblox semantic textconv ({format})\n"));
-    render_textconv_node(dom, dom.root, 0, &mut out, &identities, &doms);
+    out.push_str(&format!("# rbx-merge — {format}\n"));
+    render_node(dom, dom.root, 0, &mut out, &doms);
     out
 }
 
-fn single_dom_identities(dom: &SemanticDom) -> IdentitySet {
-    let mut identities = IdentitySet::default();
-    for (&id, _) in &dom.nodes {
-        identities.insert(Some(id), None, None);
-    }
-    identities
-}
-
-fn render_textconv_node(
+fn render_node(
     dom: &SemanticDom,
     id: NodeId,
     depth: usize,
     out: &mut String,
-    identities: &IdentitySet,
     doms: &SemanticInputs<'_>,
 ) {
     let node = dom.node(id);
-    let indent = "  ".repeat(depth);
-    out.push_str(&format!(
-        "{indent}{} [{}] id={}\n",
-        dom.path(id),
-        node.class,
-        dom.identity_label(id)
-    ));
-
-    if !node.properties.is_empty() {
-        out.push_str(&format!("{indent}  Properties:\n"));
-        for (&key, value) in &node.properties {
-            match value {
-                Variant::Attributes(attributes) => {
-                    out.push_str(&format!("{indent}    {key}:\n"));
-                    for (attr_key, attr_value) in attributes {
-                        out.push_str(&format!(
-                            "{indent}      {attr_key} = {}\n",
-                            display_variant(attr_value, ValueSource::Base, identities, doms)
-                        ));
-                    }
-                }
-                _ => out.push_str(&format!(
-                    "{indent}    {key} = {}\n",
-                    display_variant(value, ValueSource::Base, identities, doms)
-                )),
-            }
-        }
+    let indent = INDENT.repeat(depth);
+    if depth == 0 {
+        out.push_str(&format!("{indent}{}\n", node.class));
+    } else {
+        out.push_str(&format!("{indent}{} {:?}\n", node.class, node.name));
     }
 
-    if !node.children.is_empty() {
-        out.push_str(&format!("{indent}  Children:\n"));
-        for (index, child) in node.children.iter().enumerate() {
-            let child_node = dom.node(*child);
-            out.push_str(&format!(
-                "{indent}    {index}: {} [{}] id={}\n",
-                dom.path(*child),
-                child_node.class,
-                dom.identity_label(*child)
-            ));
+    let field = INDENT.repeat(depth + 1);
+    for (&key, value) in &node.properties {
+        match value {
+            Variant::Attributes(attributes) if attributes.iter().next().is_none() => {
+                out.push_str(&format!("{field}{key} = {{}}\n"));
+            }
+            Variant::Attributes(attributes) => {
+                out.push_str(&format!("{field}{key}\n"));
+                for (attr_key, attr_value) in attributes {
+                    out.push_str(&format!(
+                        "{field}{INDENT}{attr_key} = {}\n",
+                        display_variant(attr_value, ValueSource::Base, doms)
+                    ));
+                }
+            }
+            _ => out.push_str(&format!(
+                "{field}{key} = {}\n",
+                display_variant(value, ValueSource::Base, doms)
+            )),
         }
     }
 
     for &child in &node.children {
-        render_textconv_node(dom, child, depth + 1, out, identities, doms);
+        render_node(dom, child, depth + 1, out, doms);
     }
 }

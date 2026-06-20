@@ -4,10 +4,12 @@ expression: text
 ---
 # rbx-merge — XML model (.rbxmx)
 DataModel
+
   ObjectValue "Value"
     Attributes = {}
     Tags = []
     Value = → Value.Ref Target
+
     Folder "Ref Target"
       Attributes = {}
       Tags = []

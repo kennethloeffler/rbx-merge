@@ -4,14 +4,17 @@ expression: text
 ---
 # rbx-merge — XML model (.rbxmx)
 DataModel
+
   IntValue "Value=1234567"
     Attributes = {}
     Tags = []
     Value = Int64(1234567)
+
   IntValue "Value=1337"
     Attributes = {}
     Tags = []
     Value = Int64(1337)
+
   IntValue "Value=-7654321"
     Attributes = {}
     Tags = []

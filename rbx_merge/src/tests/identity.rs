@@ -3,7 +3,7 @@ use rbx_dom_weak::{InstanceBuilder, ustr};
 use rbx_types::{UniqueId, Variant};
 
 use super::common;
-use crate::MergeOptions;
+use crate::{ConflictKind, MergeOptions};
 
 /// Build a `Folder` holding several identically-named `StringValue` children,
 /// each distinguished only by its `Value`.
@@ -134,6 +134,107 @@ fn unique_id_disambiguates_reordered_siblings() -> Result<()> {
             .iter()
             .any(|diagnostic| diagnostic.code == "positional_identity"),
         "UniqueId matches should not need positional fallback, got {diagnostics:#?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rename_without_unique_id_merges_with_concurrent_edit() -> Result<()> {
+    // The case that otherwise conflicts: one side renames an instance with no
+    // UniqueId while the other edits it. Rename recovery keeps them the same
+    // instance, so the rename and the edit compose cleanly.
+    let path = common::model_path("default-inserted-folder", "xml.rbxmx");
+    let base = {
+        let bytes = common::read_fixture(&path)?;
+        common::edit_bytes(&bytes, &path, |dom| {
+            common::insert_child(
+                dom,
+                "Folder",
+                InstanceBuilder::new("IntValue")
+                    .with_name("Counter")
+                    .with_property("Value", 1_i64),
+            )?;
+            Ok(())
+        })?
+    };
+    let ours = common::edit_bytes(&base, &path, |dom| {
+        common::rename_instance(dom, "Counter", "Tally")
+    })?;
+    let theirs = common::edit_bytes(&base, &path, |dom| {
+        common::set_property(dom, "Counter", "Value", 5_i64)
+    })?;
+
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let (merged, diagnostics) = common::expect_clean(result);
+    let decoded = common::decode_bytes(&merged, &path)?;
+
+    let renamed = common::find_by_name(&decoded, "Tally")?;
+    assert!(common::find_by_name(&decoded, "Counter").is_err());
+    match decoded
+        .get_by_ref(renamed)
+        .and_then(|node| node.properties.get(&ustr("Value")))
+    {
+        Some(Variant::Int64(value)) => assert_eq!(*value, 5),
+        other => panic!("expected the edited Value to survive the rename, got {other:?}"),
+    }
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "renamed_instance"),
+        "expected a renamed_instance diagnostic, got {diagnostics:#?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn dissimilar_delete_and_add_is_not_a_rename() -> Result<()> {
+    // A genuine delete-plus-add of a property-poor instance is not similar
+    // enough to be paired as a rename, so a concurrent edit to the deleted
+    // instance still surfaces as a delete/modify conflict rather than silently
+    // following the unrelated addition.
+    let path = common::model_path("default-inserted-folder", "xml.rbxmx");
+    let base = {
+        let bytes = common::read_fixture(&path)?;
+        common::edit_bytes(&bytes, &path, |dom| {
+            common::insert_child(
+                dom,
+                "Folder",
+                InstanceBuilder::new("IntValue")
+                    .with_name("Old")
+                    .with_property("Value", 1_i64),
+            )?;
+            Ok(())
+        })?
+    };
+    let ours = common::edit_bytes(&base, &path, |dom| {
+        common::delete_instance(dom, "Old")?;
+        common::insert_child(
+            dom,
+            "Folder",
+            InstanceBuilder::new("IntValue")
+                .with_name("New")
+                .with_property("Value", 999_i64),
+        )?;
+        Ok(())
+    })?;
+    let theirs = common::edit_bytes(&base, &path, |dom| {
+        common::set_property(dom, "Old", "Value", 7_i64)
+    })?;
+
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let (conflicts, diagnostics) = common::expect_conflicted(result);
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|conflict| conflict.kind == ConflictKind::DeleteModify),
+        "expected a DeleteModify conflict, got {conflicts:#?}"
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "renamed_instance"),
+        "dissimilar instances should not be matched as a rename, got {diagnostics:#?}"
     );
     Ok(())
 }

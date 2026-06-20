@@ -10,6 +10,7 @@ use ustr::Ustr;
 
 use crate::diagnostics::{
     Diagnostic, ambiguous_identity_diagnostic, positional_identity_diagnostic,
+    renamed_instance_diagnostic,
 };
 use crate::semantic::{NodeId, SemanticDom, SemanticInputs, ValueSource};
 
@@ -103,7 +104,7 @@ pub(crate) fn build_identities(
         );
     }
 
-    emit_positional_diagnostics(base, &base_to_ours, &base_to_theirs, &mut diagnostics);
+    emit_heuristic_diagnostics(base, &base_to_ours, &base_to_theirs, &mut diagnostics);
 
     for (&ours_id, _) in &ours.nodes {
         if identities.ours_to_merge.contains_key(&ours_id) {
@@ -142,11 +143,18 @@ enum AddedMatch {
     None,
 }
 
-/// The matching of base instances to one side, plus the same-name sibling
-/// groups that had to be paired by position (no UniqueId, count > 1).
+/// Minimum structural similarity for two differently-named instances to be
+/// treated as a rename rather than an independent delete and add. Set high: a
+/// pure rename (only the name changed) scores 1.0, while a delete plus add of
+/// merely similar instances scores lower, so the two are not confused.
+const RENAME_SIMILARITY_THRESHOLD: f64 = 0.8;
+
+/// The matching of base instances to one side, plus the heuristic pairings
+/// (positional, rename) made along the way so they can be reported.
 struct SideMatch {
     map: HashMap<NodeId, NodeId>,
     positional: Vec<PositionalMatch>,
+    renames: Vec<RenameMatch>,
 }
 
 struct PositionalMatch {
@@ -156,10 +164,49 @@ struct PositionalMatch {
     count: usize,
 }
 
+struct RenameMatch {
+    base_id: NodeId,
+    class: Ustr,
+    from: String,
+    to: String,
+}
+
+/// Structural similarity of two same-class instances in `[0, 1]`: the fraction
+/// of properties whose values match, plus a point for an equal child count,
+/// normalized so identical content (only the name differing) scores `1.0`.
+fn rename_similarity(
+    base: &SemanticDom,
+    base_id: NodeId,
+    side: &SemanticDom,
+    side_id: NodeId,
+) -> f64 {
+    let base_node = base.node(base_id);
+    let side_node = side.node(side_id);
+
+    let keys: std::collections::BTreeSet<Ustr> = base_node
+        .properties
+        .keys()
+        .chain(side_node.properties.keys())
+        .copied()
+        .collect();
+    let mut equal = 0usize;
+    for key in &keys {
+        if let (Some(a), Some(b)) = (base_node.properties.get(key), side_node.properties.get(key))
+            && a == b
+        {
+            equal += 1;
+        }
+    }
+
+    let children_match = (base_node.children.len() == side_node.children.len()) as usize as f64;
+    (equal as f64 + children_match) / (keys.len() as f64 + 1.0)
+}
+
 fn match_base_to_side(base: &SemanticDom, side: &SemanticDom) -> SideMatch {
     let mut result = HashMap::new();
     let mut used_side = HashSet::new();
     let mut positional = Vec::new();
+    let mut renames = Vec::new();
     result.insert(base.root, side.root);
     used_side.insert(side.root);
 
@@ -221,6 +268,43 @@ fn match_base_to_side(base: &SemanticDom, side: &SemanticDom) -> SideMatch {
                     });
                 }
             }
+
+            // Rename recovery: a child still unmatched after name-based pairing
+            // may be the same instance under a new name. Only attempt it when a
+            // class has exactly one unmatched candidate on each side (so the
+            // pairing is unambiguous) and the two are structurally similar (so a
+            // genuine delete and add are not mistaken for a rename).
+            let base_by_class = unmatched_by_class(base, base_parent, |child| {
+                result.contains_key(&child)
+            });
+            let side_by_class =
+                unmatched_by_class(side, side_parent, |child| used_side.contains(&child));
+            for (class, base_only) in &base_by_class {
+                let [base_child] = base_only[..] else {
+                    continue;
+                };
+                let Some(side_only) = side_by_class.get(class) else {
+                    continue;
+                };
+                let [side_child] = side_only[..] else {
+                    continue;
+                };
+                if rename_similarity(base, base_child, side, side_child)
+                    < RENAME_SIMILARITY_THRESHOLD
+                {
+                    continue;
+                }
+                if used_side.insert(side_child) {
+                    result.insert(base_child, side_child);
+                    changed = true;
+                    renames.push(RenameMatch {
+                        base_id: base_child,
+                        class: *class,
+                        from: base.node(base_child).name.clone(),
+                        to: side.node(side_child).name.clone(),
+                    });
+                }
+            }
         }
 
         if !changed {
@@ -231,22 +315,23 @@ fn match_base_to_side(base: &SemanticDom, side: &SemanticDom) -> SideMatch {
     SideMatch {
         map: result,
         positional,
+        renames,
     }
 }
 
-/// Emit one deterministic `positional_identity` diagnostic per base sibling
-/// group that either side had to pair by position.
-fn emit_positional_diagnostics(
+/// Emit deterministic diagnostics for the heuristic pairings (positional and
+/// rename) either side relied on, deduplicated and sorted for stable output.
+fn emit_heuristic_diagnostics(
     base: &SemanticDom,
     ours: &SideMatch,
     theirs: &SideMatch,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let mut groups: Vec<(String, String, Ustr, usize)> = Vec::new();
+    let mut positional: Vec<(String, String, Ustr, usize)> = Vec::new();
     let mut seen = HashSet::new();
     for matched in ours.positional.iter().chain(theirs.positional.iter()) {
         if seen.insert((matched.base_parent, matched.class, matched.name.clone())) {
-            groups.push((
+            positional.push((
                 base.path(matched.base_parent),
                 matched.name.clone(),
                 matched.class,
@@ -254,14 +339,31 @@ fn emit_positional_diagnostics(
             ));
         }
     }
-    groups.sort_by(|a, b| (&a.0, &a.1, a.2.as_str()).cmp(&(&b.0, &b.1, b.2.as_str())));
-    for (path, name, class, count) in groups {
+    positional.sort_by(|a, b| (&a.0, &a.1, a.2.as_str()).cmp(&(&b.0, &b.1, b.2.as_str())));
+    for (path, name, class, count) in positional {
         diagnostics.push(positional_identity_diagnostic(
             path,
             class.as_str(),
             &name,
             count,
         ));
+    }
+
+    let mut renames: Vec<(String, String, String, Ustr)> = Vec::new();
+    let mut seen_renames = HashSet::new();
+    for matched in ours.renames.iter().chain(theirs.renames.iter()) {
+        if seen_renames.insert((matched.base_id, matched.to.clone())) {
+            renames.push((
+                base.path(matched.base_id),
+                matched.from.clone(),
+                matched.to.clone(),
+                matched.class,
+            ));
+        }
+    }
+    renames.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
+    for (path, from, to, class) in renames {
+        diagnostics.push(renamed_instance_diagnostic(path, class.as_str(), &from, &to));
     }
 }
 
@@ -334,6 +436,22 @@ fn unmatched_children_grouped(
             .entry((node.class, node.name.clone()))
             .or_default()
             .push(child);
+    }
+    grouped
+}
+
+/// Group a parent's not-yet-matched children by class alone, preserving order.
+fn unmatched_by_class(
+    dom: &SemanticDom,
+    parent: NodeId,
+    is_matched: impl Fn(NodeId) -> bool,
+) -> HashMap<Ustr, Vec<NodeId>> {
+    let mut grouped: HashMap<Ustr, Vec<NodeId>> = HashMap::new();
+    for &child in &dom.node(parent).children {
+        if is_matched(child) {
+            continue;
+        }
+        grouped.entry(dom.node(child).class).or_default().push(child);
     }
     grouped
 }

@@ -52,6 +52,25 @@ pub(crate) fn dropped_reference_diagnostic(path: String, property: &str, target:
     }
 }
 
+/// An instance with no `UniqueId` whose name changed on one side. It was paired
+/// across sides by structural similarity rather than name, recovering the
+/// rename instead of reading it as a delete plus an add.
+pub(crate) fn renamed_instance_diagnostic(
+    path: String,
+    class: &str,
+    from: &str,
+    to: &str,
+) -> Diagnostic {
+    Diagnostic {
+        severity: DiagnosticSeverity::Info,
+        code: "renamed_instance".to_owned(),
+        message: format!(
+            "matched {class} {from:?} to {to:?} as a rename (no UniqueId); identity is heuristic"
+        ),
+        path: Some(path),
+    }
+}
+
 /// Several same-name, same-class siblings that lack a `UniqueId` and so have no
 /// authoritative identity. They were paired across sides by position, which is
 /// correct when they were left in place but may misattribute edits if the

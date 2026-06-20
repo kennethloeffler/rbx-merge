@@ -225,12 +225,14 @@ pub fn child_string_values(dom: &WeakDom, parent: Ref) -> Vec<String> {
             instance
                 .children()
                 .iter()
-                .map(|child| match dom
-                    .get_by_ref(*child)
-                    .and_then(|node| node.properties.get(&ustr("Value")))
-                {
-                    Some(Variant::String(value)) => value.clone(),
-                    _ => "<none>".to_owned(),
+                .map(|child| {
+                    match dom
+                        .get_by_ref(*child)
+                        .and_then(|node| node.properties.get(&ustr("Value")))
+                    {
+                        Some(Variant::String(value)) => value.clone(),
+                        _ => "<none>".to_owned(),
+                    }
                 })
                 .collect()
         })

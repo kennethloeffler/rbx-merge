@@ -133,8 +133,9 @@ fn run() -> Result<ExitCode> {
             if let Some(file) = &resolutions_path {
                 let text = fs::read_to_string(file)
                     .with_context(|| format!("failed to read {}", file.display()))?;
-                resolutions = parse_resolutions(resolutions, &text)
-                    .with_context(|| format!("failed to parse resolutions in {}", file.display()))?;
+                resolutions = parse_resolutions(resolutions, &text).with_context(|| {
+                    format!("failed to parse resolutions in {}", file.display())
+                })?;
             }
 
             let report = merge_files(
@@ -159,7 +160,9 @@ fn run() -> Result<ExitCode> {
                     print_conflicts(&report.conflicts);
                     if let Some(report_path) = &conflicts_out {
                         fs::write(report_path, write_conflict_report(&report.conflicts))
-                            .with_context(|| format!("failed to write {}", report_path.display()))?;
+                            .with_context(|| {
+                                format!("failed to write {}", report_path.display())
+                            })?;
                         eprintln!(
                             "wrote conflict report to {}; edit `resolution` values and re-run with --resolutions {}",
                             report_path.display(),
@@ -239,9 +242,7 @@ fn run_resolve(dir: &Path, out: &Path) -> Result<ExitCode> {
     let base = read("base")?;
     let ours = read("ours")?;
     let theirs = read("theirs")?;
-    let hint = fs::read_to_string(dir.join("path"))
-        .map(PathBuf::from)
-        .ok();
+    let hint = fs::read_to_string(dir.join("path")).map(PathBuf::from).ok();
     let hint = hint.as_deref().unwrap_or(out);
     let report_text = fs::read_to_string(dir.join("conflicts.txt"))
         .with_context(|| format!("failed to read {}", dir.join("conflicts.txt").display()))?;
@@ -260,8 +261,7 @@ fn run_resolve(dir: &Path, out: &Path) -> Result<ExitCode> {
 
     match report.merged {
         Some(merged) if report.conflicts.is_empty() => {
-            fs::write(out, merged)
-                .with_context(|| format!("failed to write {}", out.display()))?;
+            fs::write(out, merged).with_context(|| format!("failed to write {}", out.display()))?;
             eprintln!("resolved; wrote {}", out.display());
             Ok(ExitCode::SUCCESS)
         }

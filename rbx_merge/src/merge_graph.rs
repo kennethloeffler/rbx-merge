@@ -15,9 +15,7 @@ use crate::diagnostics::{Diagnostic, dropped_reference_diagnostic, unknown_prope
 use crate::identity::{IdentitySet, MergeEntry, MergeNodeId};
 use crate::render::display_variant;
 use crate::resolve::{Resolutions, Side};
-use crate::semantic::{
-    NodeId, SemanticDom, SemanticInputs, ValueSource, variant_options_equal,
-};
+use crate::semantic::{NodeId, SemanticDom, SemanticInputs, ValueSource, variant_options_equal};
 
 #[derive(Debug, Clone)]
 pub(crate) struct MergedGraph {
@@ -99,7 +97,15 @@ pub(crate) fn merge_semantic_graph(
     let mut used_refs = HashSet::new();
 
     for (&merge_id, entry) in &identities.entries {
-        match deletion_decision(entry, base, ours, theirs, identities, resolutions, conflicts) {
+        match deletion_decision(
+            entry,
+            base,
+            ours,
+            theirs,
+            identities,
+            resolutions,
+            conflicts,
+        ) {
             NodeDecision::Drop => continue,
             NodeDecision::TakeSide(side) => {
                 let instance =
@@ -116,7 +122,15 @@ pub(crate) fn merge_semantic_graph(
         let Some(name) = merge_name(entry, base, ours, theirs, resolutions, conflicts) else {
             continue;
         };
-        let parent = merge_parent(entry, base, ours, theirs, identities, resolutions, conflicts);
+        let parent = merge_parent(
+            entry,
+            base,
+            ours,
+            theirs,
+            identities,
+            resolutions,
+            conflicts,
+        );
         let properties = merge_properties(entry, &doms, identities, resolutions, conflicts);
         let referent = choose_referent(entry, &doms, &mut used_refs);
 
@@ -214,7 +228,15 @@ fn deletion_decision(
                 theirs,
                 identities,
             ) {
-                resolve_delete_modify(entry, base, base_id, "deleted", "modified", resolutions, conflicts)
+                resolve_delete_modify(
+                    entry,
+                    base,
+                    base_id,
+                    "deleted",
+                    "modified",
+                    resolutions,
+                    conflicts,
+                )
             } else {
                 NodeDecision::Drop
             }
@@ -228,7 +250,15 @@ fn deletion_decision(
                 ours,
                 identities,
             ) {
-                resolve_delete_modify(entry, base, base_id, "modified", "deleted", resolutions, conflicts)
+                resolve_delete_modify(
+                    entry,
+                    base,
+                    base_id,
+                    "modified",
+                    "deleted",
+                    resolutions,
+                    conflicts,
+                )
             } else {
                 NodeDecision::Drop
             }
@@ -359,7 +389,8 @@ fn merge_class(
     merge_scalar(base_value, ours_value, theirs_value).or_else(|| {
         let (dom, id) = conflict_subject(entry, base, ours, theirs);
         let path = dom.path(id);
-        if let Some(side) = resolutions.lookup(&ConflictKind::InstanceIdentity, &path, Some("ClassName"))
+        if let Some(side) =
+            resolutions.lookup(&ConflictKind::InstanceIdentity, &path, Some("ClassName"))
             && let Some(resolved) = pick(side, base_value, ours_value, theirs_value)
         {
             return Some(resolved);
@@ -1480,7 +1511,15 @@ mod unique_id_tests {
         detect_unique_id_collisions(&mut graph, &Resolutions::take(Side::Ours), &mut conflicts);
         assert!(conflicts.is_empty());
         // The first holder keeps its UniqueId; the duplicate loses it.
-        assert!(graph.nodes[&MergeNodeId(1)].properties.contains_key(&ustr("UniqueId")));
-        assert!(!graph.nodes[&MergeNodeId(2)].properties.contains_key(&ustr("UniqueId")));
+        assert!(
+            graph.nodes[&MergeNodeId(1)]
+                .properties
+                .contains_key(&ustr("UniqueId"))
+        );
+        assert!(
+            !graph.nodes[&MergeNodeId(2)]
+                .properties
+                .contains_key(&ustr("UniqueId"))
+        );
     }
 }

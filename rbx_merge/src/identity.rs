@@ -274,9 +274,8 @@ fn match_base_to_side(base: &SemanticDom, side: &SemanticDom) -> SideMatch {
             // class has exactly one unmatched candidate on each side (so the
             // pairing is unambiguous) and the two are structurally similar (so a
             // genuine delete and add are not mistaken for a rename).
-            let base_by_class = unmatched_by_class(base, base_parent, |child| {
-                result.contains_key(&child)
-            });
+            let base_by_class =
+                unmatched_by_class(base, base_parent, |child| result.contains_key(&child));
             let side_by_class =
                 unmatched_by_class(side, side_parent, |child| used_side.contains(&child));
             for (class, base_only) in &base_by_class {
@@ -363,7 +362,12 @@ fn emit_heuristic_diagnostics(
     }
     renames.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
     for (path, from, to, class) in renames {
-        diagnostics.push(renamed_instance_diagnostic(path, class.as_str(), &from, &to));
+        diagnostics.push(renamed_instance_diagnostic(
+            path,
+            class.as_str(),
+            &from,
+            &to,
+        ));
     }
 }
 
@@ -451,7 +455,10 @@ fn unmatched_by_class(
         if is_matched(child) {
             continue;
         }
-        grouped.entry(dom.node(child).class).or_default().push(child);
+        grouped
+            .entry(dom.node(child).class)
+            .or_default()
+            .push(child);
     }
     grouped
 }

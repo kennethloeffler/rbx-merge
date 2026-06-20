@@ -111,7 +111,11 @@ fn delete_modify_take_theirs_keeps_modified_instance() -> Result<()> {
     let decoded = common::decode_bytes(&merged, &path)?;
 
     let names = common::child_names(&decoded, decoded.root_ref());
-    assert_eq!(names.len(), 3, "the modified instance should survive: {names:?}");
+    assert_eq!(
+        names.len(),
+        3,
+        "the modified instance should survive: {names:?}"
+    );
     assert_eq!(merged_value(&merged, &path, "Value=1337")?, 42);
     Ok(())
 }
@@ -142,8 +146,9 @@ fn ref_target_conflict_is_resolvable() -> Result<()> {
         let other = common::find_by_name(dom, "OtherTarget")?;
         common::set_property(dom, "Value", "Value", Variant::Ref(other))
     })?;
-    let theirs =
-        common::edit_bytes(&base, &path, |dom| common::delete_instance(dom, "OtherTarget"))?;
+    let theirs = common::edit_bytes(&base, &path, |dom| {
+        common::delete_instance(dom, "OtherTarget")
+    })?;
 
     let report = merge_files(
         FileInput::new(&base).with_path_hint(&path),

@@ -43,7 +43,8 @@ fn independent_edits_to_same_named_siblings_merge() -> Result<()> {
     let ours = common::edit_bytes(&base, &path, |dom| set_nth_item_value(dom, 0, "a2"))?;
     let theirs = common::edit_bytes(&base, &path, |dom| set_nth_item_value(dom, 2, "c2"))?;
 
-    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let result =
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
     let (merged, _) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
@@ -106,24 +107,29 @@ fn unique_id_disambiguates_reordered_siblings() -> Result<()> {
     })?;
     let theirs = common::edit_bytes(&base, &path, |dom| set_nth_item_value(dom, 0, "a2"))?;
 
-    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let result =
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
     let (merged, diagnostics) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
     let folder = common::find_by_name(&decoded, "Folder")?;
     let value_of = |target_id: UniqueId| -> Option<String> {
-        decoded.get_by_ref(folder)?.children().iter().find_map(|child| {
-            let node = decoded.get_by_ref(*child)?;
-            match node.properties.get(&ustr("UniqueId")) {
-                Some(Variant::UniqueId(id)) if *id == target_id => {
-                    match node.properties.get(&ustr("Value")) {
-                        Some(Variant::String(value)) => Some(value.clone()),
-                        _ => None,
+        decoded
+            .get_by_ref(folder)?
+            .children()
+            .iter()
+            .find_map(|child| {
+                let node = decoded.get_by_ref(*child)?;
+                match node.properties.get(&ustr("UniqueId")) {
+                    Some(Variant::UniqueId(id)) if *id == target_id => {
+                        match node.properties.get(&ustr("Value")) {
+                            Some(Variant::String(value)) => Some(value.clone()),
+                            _ => None,
+                        }
                     }
+                    _ => None,
                 }
-                _ => None,
-            }
-        })
+            })
     };
 
     // The edit followed the UniqueId, not the slot it used to occupy.
@@ -164,7 +170,8 @@ fn rename_without_unique_id_merges_with_concurrent_edit() -> Result<()> {
         common::set_property(dom, "Counter", "Value", 5_i64)
     })?;
 
-    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let result =
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
     let (merged, diagnostics) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
@@ -221,7 +228,8 @@ fn dissimilar_delete_and_add_is_not_a_rename() -> Result<()> {
         common::set_property(dom, "Old", "Value", 7_i64)
     })?;
 
-    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let result =
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
     let (conflicts, diagnostics) = common::expect_conflicted(result);
 
     assert!(

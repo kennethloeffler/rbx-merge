@@ -37,7 +37,10 @@ fn ref_to_deleted_target_conflicts() -> Result<()> {
     // reference points at an instance dropped from the merge.
     let path = common::model_path("ref-child", "xml.rbxmx");
     let base = common::edit_fixture(&path, |dom| {
-        common::insert_child_at_root(dom, rbx_dom_weak::InstanceBuilder::new("Folder").with_name("OtherTarget"));
+        common::insert_child_at_root(
+            dom,
+            rbx_dom_weak::InstanceBuilder::new("Folder").with_name("OtherTarget"),
+        );
         Ok(())
     })?;
     let ours = common::edit_bytes(&base, &path, |dom| {
@@ -48,7 +51,8 @@ fn ref_to_deleted_target_conflicts() -> Result<()> {
         common::delete_instance(dom, "OtherTarget")
     })?;
 
-    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let result =
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
     let (conflicts, _) = common::expect_conflicted(result);
 
     assert!(

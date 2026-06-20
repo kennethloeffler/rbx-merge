@@ -78,7 +78,10 @@ fn apply_edit(dom: &mut WeakDom, edit: &Edit, counter: &mut u32, name_space: u32
         }
         Edit::AddChild(index) => {
             let name = fresh_name('A');
-            dom.insert(pick(index), InstanceBuilder::new("StringValue").with_name(name));
+            dom.insert(
+                pick(index),
+                InstanceBuilder::new("StringValue").with_name(name),
+            );
         }
         Edit::Delete(index) => {
             dom.destroy(pick(index));

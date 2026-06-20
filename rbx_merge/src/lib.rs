@@ -171,8 +171,7 @@ pub fn merge_files(
     let ours_dom = SemanticDom::from_weak_dom(&ours_file.dom)?;
     let theirs_dom = SemanticDom::from_weak_dom(&theirs_file.dom)?;
 
-    let (identities, identity_diagnostics) =
-        build_identities(&base_dom, &ours_dom, &theirs_dom);
+    let (identities, identity_diagnostics) = build_identities(&base_dom, &ours_dom, &theirs_dom);
     diagnostics.extend(identity_diagnostics);
 
     let doms = SemanticInputs {

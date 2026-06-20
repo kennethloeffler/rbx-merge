@@ -125,7 +125,10 @@ fn clean_one_sided_rename_keeps_new_name() -> Result<()> {
     let decoded = common::decode_bytes(&merged, &path)?;
 
     let names = common::child_names(&decoded, decoded.root_ref());
-    assert!(names.contains(&"Renamed".to_owned()), "names were {names:?}");
+    assert!(
+        names.contains(&"Renamed".to_owned()),
+        "names were {names:?}"
+    );
     assert!(!names.contains(&"Value=1337".to_owned()));
     Ok(())
 }
@@ -155,7 +158,8 @@ fn delete_versus_modify_conflicts() -> Result<()> {
         common::set_property(dom, "Value=1337", "Value", 42_i64)
     })?;
 
-    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let result =
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
     let (conflicts, _) = common::expect_conflicted(result);
 
     assert!(
@@ -183,13 +187,17 @@ fn child_order_independent_additions_merge_cleanly() -> Result<()> {
         Ok(())
     })?;
 
-    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let result =
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
     let (merged, _) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
     let names = common::child_names(&decoded, decoded.root_ref());
     assert!(names.contains(&"OurAdd".to_owned()), "names were {names:?}");
-    assert!(names.contains(&"TheirAdd".to_owned()), "names were {names:?}");
+    assert!(
+        names.contains(&"TheirAdd".to_owned()),
+        "names were {names:?}"
+    );
     assert_eq!(names.len(), 5);
     Ok(())
 }
@@ -201,7 +209,8 @@ fn child_order_divergent_reorder_conflicts() -> Result<()> {
     let ours = common::edit_fixture(&path, |dom| common::move_to_end(dom, "Value=1234567"))?;
     let theirs = common::edit_fixture(&path, |dom| common::move_to_end(dom, "Value=1337"))?;
 
-    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let result =
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
     let (conflicts, _) = common::expect_conflicted(result);
 
     assert!(
@@ -235,7 +244,8 @@ fn parent_move_divergent_conflicts() -> Result<()> {
     let ours = common::edit_bytes(&base, &path, |dom| common::reparent(dom, "Leaf", "P1"))?;
     let theirs = common::edit_bytes(&base, &path, |dom| common::reparent(dom, "Leaf", "P2"))?;
 
-    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let result =
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
     let (conflicts, _) = common::expect_conflicted(result);
 
     assert!(
@@ -268,16 +278,29 @@ fn ambiguous_added_match_reports_diagnostic() -> Result<()> {
     let path = common::model_path("default-inserted-folder", "xml.rbxmx");
     let base = common::read_fixture(&path)?;
     let ours = common::edit_fixture(&path, |dom| {
-        common::insert_child(dom, "Folder", InstanceBuilder::new("StringValue").with_name("Dup"))?;
-        common::insert_child(dom, "Folder", InstanceBuilder::new("StringValue").with_name("Dup"))?;
+        common::insert_child(
+            dom,
+            "Folder",
+            InstanceBuilder::new("StringValue").with_name("Dup"),
+        )?;
+        common::insert_child(
+            dom,
+            "Folder",
+            InstanceBuilder::new("StringValue").with_name("Dup"),
+        )?;
         Ok(())
     })?;
     let theirs = common::edit_fixture(&path, |dom| {
-        common::insert_child(dom, "Folder", InstanceBuilder::new("StringValue").with_name("Dup"))?;
+        common::insert_child(
+            dom,
+            "Folder",
+            InstanceBuilder::new("StringValue").with_name("Dup"),
+        )?;
         Ok(())
     })?;
 
-    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let result =
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
     let (_, diagnostics) = common::expect_clean(result);
 
     assert!(

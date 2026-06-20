@@ -32,9 +32,12 @@ fn path_hint_wins_over_content() {
 
 #[test]
 fn explicit_format_overrides_everything() {
-    let format =
-        detect_format(b"<roblox!", Some(Path::new("model.rbxlx")), Some(FileFormat::BinaryModel))
-            .unwrap();
+    let format = detect_format(
+        b"<roblox!",
+        Some(Path::new("model.rbxlx")),
+        Some(FileFormat::BinaryModel),
+    )
+    .unwrap();
     assert_eq!(format, FileFormat::BinaryModel);
 }
 

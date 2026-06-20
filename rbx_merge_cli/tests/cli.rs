@@ -182,9 +182,18 @@ fn conflict_report_round_trip_resolves() {
         .expect("run merge with --conflicts-out");
     assert!(!first.status.success(), "the first merge should conflict");
     let report_text = fs::read_to_string(&report).expect("report written");
-    assert!(report_text.contains("kind = PropertyValue"), "{report_text}");
-    assert!(report_text.contains("resolution = unresolved"), "{report_text}");
-    assert!(!out.exists(), "no output should be written while conflicted");
+    assert!(
+        report_text.contains("kind = PropertyValue"),
+        "{report_text}"
+    );
+    assert!(
+        report_text.contains("resolution = unresolved"),
+        "{report_text}"
+    );
+    assert!(
+        !out.exists(),
+        "no output should be written while conflicted"
+    );
 
     // Step 2: the user resolves every conflict in favor of theirs.
     let edited = report_text.replace("resolution = unresolved", "resolution = theirs");
@@ -252,8 +261,9 @@ fn stash_and_resolve_round_trip() {
 
     // Resolve in favor of theirs, then re-merge from the stash.
     let report = stash.join("conflicts.txt");
-    let edited =
-        fs::read_to_string(&report).unwrap().replace("resolution = unresolved", "resolution = theirs");
+    let edited = fs::read_to_string(&report)
+        .unwrap()
+        .replace("resolution = unresolved", "resolution = theirs");
     fs::write(&report, edited).unwrap();
 
     let resolved = Command::new(BIN)
@@ -292,6 +302,9 @@ fn textconv_prints_semantic_text() {
         .expect("run textconv");
     assert!(output.status.success());
     let rendered = String::from_utf8_lossy(&output.stdout);
-    assert!(rendered.contains("IntValue \"Counter\""), "got:\n{rendered}");
+    assert!(
+        rendered.contains("IntValue \"Counter\""),
+        "got:\n{rendered}"
+    );
     assert!(rendered.contains("Value = Int64(42)"), "got:\n{rendered}");
 }

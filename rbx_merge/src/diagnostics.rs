@@ -41,7 +41,11 @@ pub(crate) fn unknown_property_diagnostic(path: String, class: &str, property: &
 /// in the merged output because that target was deleted. The reference is not a
 /// conflict — nilling it is a reasonable outcome — but it is reported so the
 /// drop is visible rather than silent.
-pub(crate) fn dropped_reference_diagnostic(path: String, property: &str, target: &str) -> Diagnostic {
+pub(crate) fn dropped_reference_diagnostic(
+    path: String,
+    property: &str,
+    target: &str,
+) -> Diagnostic {
     Diagnostic {
         severity: DiagnosticSeverity::Warning,
         code: "dropped_reference".to_owned(),

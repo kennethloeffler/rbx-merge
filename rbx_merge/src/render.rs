@@ -60,7 +60,12 @@ pub(crate) fn display_variant(
             None => "OptionalCFrame(none)".to_owned(),
         },
         Variant::Color3(value) => {
-            format!("Color3({}, {}, {})", f32s(value.r), f32s(value.g), f32s(value.b))
+            format!(
+                "Color3({}, {}, {})",
+                f32s(value.r),
+                f32s(value.g),
+                f32s(value.b)
+            )
         }
         Variant::Color3uint8(value) => {
             format!("Color3uint8({}, {}, {})", value.r, value.g, value.b)
@@ -112,7 +117,14 @@ pub(crate) fn display_variant(
             let keypoints = value
                 .keypoints
                 .iter()
-                .map(|kp| format!("({}, {}, {})", f32s(kp.time), f32s(kp.value), f32s(kp.envelope)))
+                .map(|kp| {
+                    format!(
+                        "({}, {}, {})",
+                        f32s(kp.time),
+                        f32s(kp.value),
+                        f32s(kp.envelope)
+                    )
+                })
                 .collect::<Vec<_>>();
             format!("NumberSequence([{}])", keypoints.join(", "))
         }

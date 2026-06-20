@@ -632,6 +632,26 @@ fn merge_property_value(
     ) {
         return keep_or_delete(ours, ValueSource::Ours);
     }
+
+    // A `UniqueId` that diverges three ways on an instance we have already
+    // matched is regenerated identity metadata, not a real edit: Studio rewrites
+    // these on some instances (e.g. Welds) when a place is opened, so each side
+    // can carry a different value for the same instance. The exact value is
+    // meaningless as long as it stays unique across the tree, which
+    // `detect_unique_id_collisions` enforces after the merge. Resolve it
+    // deterministically toward the base value (minimizing churn) rather than
+    // surfacing a conflict the user cannot meaningfully resolve.
+    if key == ustr("UniqueId") {
+        let (value, source) = if base.is_some() {
+            (base, ValueSource::Base)
+        } else if ours.is_some() {
+            (ours, ValueSource::Ours)
+        } else {
+            (theirs, ValueSource::Theirs)
+        };
+        return keep_or_delete(value, source);
+    }
+
     PropertyMerge::Conflict
 }
 

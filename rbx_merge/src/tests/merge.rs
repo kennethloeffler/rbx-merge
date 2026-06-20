@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rbx_dom_weak::InstanceBuilder;
+use rbx_dom_weak::{InstanceBuilder, ustr};
 use rbx_types::{UniqueId, Variant};
 
 use super::common;
@@ -28,6 +28,50 @@ fn clean_one_sided_property_edit_snapshots_output() -> Result<()> {
     insta::assert_snapshot!(
         "clean_one_sided_property_edit_textconv",
         textconv(&merged, Some(&path))?
+    );
+    Ok(())
+}
+
+#[test]
+fn regenerated_unique_id_diverges_three_ways_but_merges_cleanly() -> Result<()> {
+    // Studio regenerates the UniqueId of some instances (e.g. Welds) when a place
+    // is opened, so both sides can independently carry a different UniqueId for an
+    // instance that is otherwise unchanged. The instance still matches by
+    // structure, and the divergent UniqueId — base, ours, theirs all distinct —
+    // must resolve cleanly to the base value rather than surfacing a conflict the
+    // user cannot meaningfully resolve.
+    let path = common::model_path("three-intvalues", "xml.rbxmx");
+    let base_id = UniqueId::new(1, 1, 1);
+    let ours_id = UniqueId::new(2, 2, 2);
+    let theirs_id = UniqueId::new(3, 3, 3);
+
+    let base = common::edit_fixture(&path, |dom| {
+        common::set_property(dom, "Value=1337", "UniqueId", Variant::UniqueId(base_id))
+    })?;
+    let ours = common::edit_bytes(&base, &path, |dom| {
+        common::set_property(dom, "Value=1337", "UniqueId", Variant::UniqueId(ours_id))
+    })?;
+    let theirs = common::edit_bytes(&base, &path, |dom| {
+        common::set_property(dom, "Value=1337", "UniqueId", Variant::UniqueId(theirs_id))
+    })?;
+
+    let result =
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let (merged, _) = common::expect_clean(result);
+    let decoded = common::decode_bytes(&merged, &path)?;
+
+    let target = common::find_by_name(&decoded, "Value=1337")?;
+    let merged_id = match decoded
+        .get_by_ref(target)
+        .and_then(|node| node.properties.get(&ustr("UniqueId")))
+    {
+        Some(Variant::UniqueId(id)) => Some(*id),
+        _ => None,
+    };
+    assert_eq!(
+        merged_id,
+        Some(base_id),
+        "the matched instance should keep the base UniqueId"
     );
     Ok(())
 }

@@ -214,6 +214,21 @@ fn match_base_to_side(base: &SemanticDom, side: &SemanticDom) -> SideMatch {
     // moves, and same-name collisions. WeakDom guarantees uniqueness per file,
     // so a shared UniqueId is an exact match. This runs first, so positional
     // matching below only ever sees instances that lack a UniqueId.
+    //
+    // TODO: UniqueId is a strong signal that in instance has the same semantic
+    // identity, but not the last word. Studio regenerates it on some instances
+    // (e.g. Welds) in some circumstances, so the "same" instance can have
+    // different ids across sides. Single such instances already match
+    // structurally (and Lever 1 keeps their divergent UniqueId from
+    // conflicting), but ambiguous groups — several same-class, same-name
+    // siblings whose ids all regenerated — fall to positional pairing below,
+    // which pairs by sibling order and can mismatch after a Studio rebuild. Add
+    // property similarity as an additional matching signal to pair these by
+    // content. Note the wrinkle: instances like Welds are defined by Ref
+    // properties (Part0/Part1), and `rename_similarity` compares raw Variants,
+    // so cross-file Refs never count as equal — the metric must become
+    // identity-aware for Refs (resolving through the match map, which means
+    // ordering so referenced instances are matched first).
     let base_unique_ids = unique_id_index(base);
     let side_unique_ids = unique_id_index(side);
     for (unique_id, base_nodes) in base_unique_ids {

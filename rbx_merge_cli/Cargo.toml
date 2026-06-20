@@ -1,0 +1,15 @@
+[package]
+name = "rbx_merge_cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rbx-merge"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+env_logger.workspace = true
+rbx_merge = { path = "../rbx_merge" }

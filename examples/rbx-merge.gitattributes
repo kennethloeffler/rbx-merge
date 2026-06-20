@@ -1,0 +1,4 @@
+*.rbxl  diff=rbxdom merge=rbxdom
+*.rbxlx diff=rbxdom merge=rbxdom
+*.rbxm  diff=rbxdom merge=rbxdom
+*.rbxmx diff=rbxdom merge=rbxdom

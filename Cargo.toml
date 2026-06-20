@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "rbx_merge",
+    "rbx_merge_cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1.0"
+blake3 = "1.8"
+clap = { version = "4.5", features = ["derive"] }
+env_logger = "0.11"
+indexmap = "2.12"
+log = "0.4"
+rbx_binary = { path = "../rbx-dom/rbx_binary" }
+rbx_dom_weak = { path = "../rbx-dom/rbx_dom_weak" }
+rbx_reflection = { path = "../rbx-dom/rbx_reflection" }
+rbx_reflection_database = { path = "../rbx-dom/rbx_reflection_database" }
+rbx_types = { path = "../rbx-dom/rbx_types" }
+rbx_xml = { path = "../rbx-dom/rbx_xml" }
+thiserror = "1.0"
+ustr = "1.1"

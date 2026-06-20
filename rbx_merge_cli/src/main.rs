@@ -1,4 +1,8 @@
-use std::{fs, path::PathBuf, process::ExitCode};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -57,6 +61,19 @@ enum Command {
         /// On conflict, write an editable conflict report to this path.
         #[arg(long)]
         conflicts_out: Option<PathBuf>,
+        /// On conflict, stash base/ours/theirs and the report in this directory
+        /// so the merge can be resolved later with `rbx-merge resolve`. Suitable
+        /// for the Git merge driver, which discards its base/theirs temporaries.
+        #[arg(long)]
+        stash_dir: Option<PathBuf>,
+    },
+    /// Re-merge a conflict stashed by `merge --stash-dir`, applying the choices
+    /// edited into its conflict report, and write the result to `--out`.
+    Resolve {
+        #[arg(long)]
+        stash_dir: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
     },
     Diff {
         old: PathBuf,
@@ -95,6 +112,7 @@ fn run() -> Result<ExitCode> {
             take,
             resolutions: resolutions_path,
             conflicts_out,
+            stash_dir,
         } => {
             let base_bytes =
                 fs::read(&base).with_context(|| format!("failed to read {}", base.display()))?;
@@ -148,10 +166,30 @@ fn run() -> Result<ExitCode> {
                             report_path.display()
                         );
                     }
+                    if let Some(dir) = &stash_dir {
+                        stash_conflict(
+                            dir,
+                            &base_bytes,
+                            &ours_bytes,
+                            &theirs_bytes,
+                            hint,
+                            &report.conflicts,
+                        )?;
+                        // Suggest the in-repo path for --out, not Git's %A
+                        // temporary, so the resolved file lands where it belongs.
+                        eprintln!(
+                            "stashed merge inputs to {}; edit {}/conflicts.txt then run: rbx-merge resolve --stash-dir {} --out {}",
+                            dir.display(),
+                            dir.display(),
+                            dir.display(),
+                            hint.display(),
+                        );
+                    }
                     Ok(ExitCode::from(1))
                 }
             }
         }
+        Command::Resolve { stash_dir, out } => run_resolve(&stash_dir, &out),
         Command::Diff { old, new } => {
             let old_bytes =
                 fs::read(&old).with_context(|| format!("failed to read {}", old.display()))?;
@@ -167,6 +205,70 @@ fn run() -> Result<ExitCode> {
             println!("+++ {}", new.display());
             print!("{new_text}");
             Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+/// Write the three merge inputs, the path hint, and an editable conflict report
+/// into `dir`, so a conflicted merge can be resolved after the caller's
+/// temporary files (e.g. Git's %O/%B) are gone.
+fn stash_conflict(
+    dir: &Path,
+    base: &[u8],
+    ours: &[u8],
+    theirs: &[u8],
+    hint: &Path,
+    conflicts: &[Conflict],
+) -> Result<()> {
+    fs::create_dir_all(dir)
+        .with_context(|| format!("failed to create stash dir {}", dir.display()))?;
+    fs::write(dir.join("base"), base)?;
+    fs::write(dir.join("ours"), ours)?;
+    fs::write(dir.join("theirs"), theirs)?;
+    fs::write(dir.join("path"), hint.to_string_lossy().as_bytes())?;
+    fs::write(dir.join("conflicts.txt"), write_conflict_report(conflicts))?;
+    Ok(())
+}
+
+/// Re-merge a stash, applying the choices edited into its conflict report.
+fn run_resolve(dir: &Path, out: &Path) -> Result<ExitCode> {
+    let read = |name: &str| {
+        fs::read(dir.join(name))
+            .with_context(|| format!("failed to read {}", dir.join(name).display()))
+    };
+    let base = read("base")?;
+    let ours = read("ours")?;
+    let theirs = read("theirs")?;
+    let hint = fs::read_to_string(dir.join("path"))
+        .map(PathBuf::from)
+        .ok();
+    let hint = hint.as_deref().unwrap_or(out);
+    let report_text = fs::read_to_string(dir.join("conflicts.txt"))
+        .with_context(|| format!("failed to read {}", dir.join("conflicts.txt").display()))?;
+    let resolutions = parse_resolutions(Resolutions::none(), &report_text)?;
+
+    let report = merge_files(
+        FileInput::new(&base).with_path_hint(hint),
+        FileInput::new(&ours).with_path_hint(hint),
+        FileInput::new(&theirs).with_path_hint(hint),
+        MergeSettings {
+            resolutions,
+            ..Default::default()
+        },
+    )?;
+    print_diagnostics(&report.diagnostics);
+
+    match report.merged {
+        Some(merged) if report.conflicts.is_empty() => {
+            fs::write(out, merged)
+                .with_context(|| format!("failed to write {}", out.display()))?;
+            eprintln!("resolved; wrote {}", out.display());
+            Ok(ExitCode::SUCCESS)
+        }
+        _ => {
+            eprintln!("still conflicted after applying resolutions:");
+            print_conflicts(&report.conflicts);
+            Ok(ExitCode::from(1))
         }
     }
 }

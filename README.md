@@ -52,9 +52,21 @@ rbx-merge merge --base b --ours o --theirs t --out m --conflicts-out conflicts.t
 rbx-merge merge --base b --ours o --theirs t --out m --resolutions conflicts.txt
 ```
 
-The report-driven flow needs the three inputs at resolve time, so it suits a
-workflow that keeps them rather than Git's merge driver (which discards the
-base/theirs temporaries once the driver exits non-zero).
+For Git, where the base/theirs temporaries are discarded once the driver exits
+non-zero, the driver can stash everything it needs on conflict:
+
+```ini
+[merge "rbxdom"]
+    driver = rbx-merge merge --base %O --ours %A --theirs %B --out %A --path %P --stash-dir .rbxmerge/%P
+```
+
+On conflict this writes `.rbxmerge/<file>/{base,ours,theirs,path,conflicts.txt}`.
+Edit `conflicts.txt`, then re-merge from the stash into the working file:
+
+```sh
+rbx-merge resolve --stash-dir .rbxmerge/path/to/file.rbxmx --out path/to/file.rbxmx
+git add path/to/file.rbxmx
+```
 
 ## Commands
 

@@ -223,6 +223,64 @@ fn conflict_report_round_trip_resolves() {
 }
 
 #[test]
+fn stash_and_resolve_round_trip() {
+    let scratch = Scratch::new("stash");
+    let base = scratch.write("base.rbxmx", &intvalue_model("Counter", 1));
+    let ours = scratch.write("ours.rbxmx", &intvalue_model("Counter", 2));
+    let theirs = scratch.write("theirs.rbxmx", &intvalue_model("Counter", 3));
+    let out = scratch.path("out.rbxmx");
+    let stash = scratch.path("stash");
+
+    // A conflicted merge stashes its inputs and report.
+    let first = Command::new(BIN)
+        .args(["merge", "--base"])
+        .arg(&base)
+        .arg("--ours")
+        .arg(&ours)
+        .arg("--theirs")
+        .arg(&theirs)
+        .arg("--out")
+        .arg(&out)
+        .args(["--path", "model.rbxmx", "--stash-dir"])
+        .arg(&stash)
+        .output()
+        .expect("run merge --stash-dir");
+    assert!(!first.status.success());
+    for name in ["base", "ours", "theirs", "path", "conflicts.txt"] {
+        assert!(stash.join(name).exists(), "stash missing {name}");
+    }
+
+    // Resolve in favor of theirs, then re-merge from the stash.
+    let report = stash.join("conflicts.txt");
+    let edited =
+        fs::read_to_string(&report).unwrap().replace("resolution = unresolved", "resolution = theirs");
+    fs::write(&report, edited).unwrap();
+
+    let resolved = Command::new(BIN)
+        .args(["resolve", "--stash-dir"])
+        .arg(&stash)
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .expect("run resolve");
+    assert!(
+        resolved.status.success(),
+        "resolve should succeed, stderr: {}",
+        String::from_utf8_lossy(&resolved.stderr)
+    );
+
+    let textconv = Command::new(BIN)
+        .arg("textconv")
+        .arg(&out)
+        .output()
+        .expect("run textconv");
+    assert!(
+        String::from_utf8_lossy(&textconv.stdout).contains("Value = Int64(3)"),
+        "resolved output should take theirs"
+    );
+}
+
+#[test]
 fn textconv_prints_semantic_text() {
     let scratch = Scratch::new("textconv");
     let model = scratch.write("model.rbxmx", &intvalue_model("Counter", 42));

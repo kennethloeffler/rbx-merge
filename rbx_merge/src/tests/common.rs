@@ -207,6 +207,36 @@ pub fn stable_ref(value: u128) -> Ref {
     Ref::some(value)
 }
 
+pub fn nth_child(dom: &WeakDom, parent_name: &str, index: usize) -> Result<Ref> {
+    let parent = find_by_name(dom, parent_name)?;
+    let children = dom
+        .get_by_ref(parent)
+        .map(|instance| instance.children().to_vec())
+        .unwrap_or_default();
+    children
+        .get(index)
+        .copied()
+        .with_context(|| format!("parent {parent_name:?} has no child at index {index}"))
+}
+
+pub fn child_string_values(dom: &WeakDom, parent: Ref) -> Vec<String> {
+    dom.get_by_ref(parent)
+        .map(|instance| {
+            instance
+                .children()
+                .iter()
+                .map(|child| match dom
+                    .get_by_ref(*child)
+                    .and_then(|node| node.properties.get(&ustr("Value")))
+                {
+                    Some(Variant::String(value)) => value.clone(),
+                    _ => "<none>".to_owned(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn child_names(dom: &WeakDom, parent: Ref) -> Vec<String> {
     dom.get_by_ref(parent)
         .map(|instance| {

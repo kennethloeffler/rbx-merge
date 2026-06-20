@@ -8,7 +8,9 @@ use rbx_reflection::ClassTag;
 use rbx_types::{Ref, UniqueId};
 use ustr::Ustr;
 
-use crate::diagnostics::{Diagnostic, ambiguous_identity_diagnostic};
+use crate::diagnostics::{
+    Diagnostic, ambiguous_identity_diagnostic, positional_identity_diagnostic,
+};
 use crate::semantic::{NodeId, SemanticDom, SemanticInputs, ValueSource};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -96,10 +98,12 @@ pub(crate) fn build_identities(
     for (&base_id, _) in &base.nodes {
         identities.insert(
             Some(base_id),
-            base_to_ours.get(&base_id).copied(),
-            base_to_theirs.get(&base_id).copied(),
+            base_to_ours.map.get(&base_id).copied(),
+            base_to_theirs.map.get(&base_id).copied(),
         );
     }
+
+    emit_positional_diagnostics(base, &base_to_ours, &base_to_theirs, &mut diagnostics);
 
     for (&ours_id, _) in &ours.nodes {
         if identities.ours_to_merge.contains_key(&ours_id) {
@@ -138,12 +142,31 @@ enum AddedMatch {
     None,
 }
 
-fn match_base_to_side(base: &SemanticDom, side: &SemanticDom) -> HashMap<NodeId, NodeId> {
+/// The matching of base instances to one side, plus the same-name sibling
+/// groups that had to be paired by position (no UniqueId, count > 1).
+struct SideMatch {
+    map: HashMap<NodeId, NodeId>,
+    positional: Vec<PositionalMatch>,
+}
+
+struct PositionalMatch {
+    base_parent: NodeId,
+    class: Ustr,
+    name: String,
+    count: usize,
+}
+
+fn match_base_to_side(base: &SemanticDom, side: &SemanticDom) -> SideMatch {
     let mut result = HashMap::new();
     let mut used_side = HashSet::new();
+    let mut positional = Vec::new();
     result.insert(base.root, side.root);
     used_side.insert(side.root);
 
+    // UniqueId is authoritative: it identifies an instance across renames,
+    // moves, and same-name collisions. WeakDom guarantees uniqueness per file,
+    // so a shared UniqueId is an exact match. This runs first, so positional
+    // matching below only ever sees instances that lack a UniqueId.
     let base_unique_ids = unique_id_index(base);
     let side_unique_ids = unique_id_index(side);
     for (unique_id, base_nodes) in base_unique_ids {
@@ -168,19 +191,35 @@ fn match_base_to_side(base: &SemanticDom, side: &SemanticDom) -> HashMap<NodeId,
             .map(|(base_id, side_id)| (*base_id, *side_id))
             .collect();
         for (base_parent, side_parent) in parent_pairs {
-            let base_candidates =
-                unique_unmatched_children_by_class_name(base, base_parent, &result);
-            let side_candidates =
-                unique_unmatched_side_children_by_class_name(side, side_parent, &used_side);
-            for (key, base_child) in base_candidates {
-                let Some(side_child) = side_candidates.get(&key).copied() else {
+            let base_groups =
+                unmatched_children_grouped(base, base_parent, |child| result.contains_key(&child));
+            let side_groups =
+                unmatched_children_grouped(side, side_parent, |child| used_side.contains(&child));
+            for (key, base_list) in &base_groups {
+                let Some(side_list) = side_groups.get(key) else {
                     continue;
                 };
-                if result.contains_key(&base_child) || !used_side.insert(side_child) {
-                    continue;
+                // Pair same-(class, name) siblings by their order under the
+                // parent. For unique names each group has one member, so this is
+                // the ordinary one-to-one match; for duplicates it recovers
+                // identity that would otherwise be lost to delete-plus-add.
+                let mut paired = 0;
+                for (&base_child, &side_child) in base_list.iter().zip(side_list.iter()) {
+                    if result.contains_key(&base_child) || !used_side.insert(side_child) {
+                        continue;
+                    }
+                    result.insert(base_child, side_child);
+                    changed = true;
+                    paired += 1;
                 }
-                result.insert(base_child, side_child);
-                changed = true;
+                if paired > 0 && (base_list.len() > 1 || side_list.len() > 1) {
+                    positional.push(PositionalMatch {
+                        base_parent,
+                        class: key.0,
+                        name: key.1.clone(),
+                        count: paired,
+                    });
+                }
             }
         }
 
@@ -189,7 +228,41 @@ fn match_base_to_side(base: &SemanticDom, side: &SemanticDom) -> HashMap<NodeId,
         }
     }
 
-    result
+    SideMatch {
+        map: result,
+        positional,
+    }
+}
+
+/// Emit one deterministic `positional_identity` diagnostic per base sibling
+/// group that either side had to pair by position.
+fn emit_positional_diagnostics(
+    base: &SemanticDom,
+    ours: &SideMatch,
+    theirs: &SideMatch,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut groups: Vec<(String, String, Ustr, usize)> = Vec::new();
+    let mut seen = HashSet::new();
+    for matched in ours.positional.iter().chain(theirs.positional.iter()) {
+        if seen.insert((matched.base_parent, matched.class, matched.name.clone())) {
+            groups.push((
+                base.path(matched.base_parent),
+                matched.name.clone(),
+                matched.class,
+                matched.count,
+            ));
+        }
+    }
+    groups.sort_by(|a, b| (&a.0, &a.1, a.2.as_str()).cmp(&(&b.0, &b.1, b.2.as_str())));
+    for (path, name, class, count) in groups {
+        diagnostics.push(positional_identity_diagnostic(
+            path,
+            class.as_str(),
+            &name,
+            count,
+        ));
+    }
 }
 
 fn unique_id_index(dom: &SemanticDom) -> HashMap<UniqueId, Vec<NodeId>> {
@@ -244,14 +317,16 @@ fn is_service_class(class: Ustr) -> bool {
     }
 }
 
-fn unique_unmatched_children_by_class_name(
+/// Group a parent's not-yet-matched children by `(class, name)`, preserving
+/// sibling order within each group so the groups can be paired by position.
+fn unmatched_children_grouped(
     dom: &SemanticDom,
     parent: NodeId,
-    existing: &HashMap<NodeId, NodeId>,
-) -> HashMap<(Ustr, String), NodeId> {
+    is_matched: impl Fn(NodeId) -> bool,
+) -> HashMap<(Ustr, String), Vec<NodeId>> {
     let mut grouped: HashMap<(Ustr, String), Vec<NodeId>> = HashMap::new();
     for &child in &dom.node(parent).children {
-        if existing.contains_key(&child) {
+        if is_matched(child) {
             continue;
         }
         let node = dom.node(child);
@@ -261,31 +336,6 @@ fn unique_unmatched_children_by_class_name(
             .push(child);
     }
     grouped
-        .into_iter()
-        .filter_map(|(key, nodes)| (nodes.len() == 1).then_some((key, nodes[0])))
-        .collect()
-}
-
-fn unique_unmatched_side_children_by_class_name(
-    dom: &SemanticDom,
-    parent: NodeId,
-    used: &HashSet<NodeId>,
-) -> HashMap<(Ustr, String), NodeId> {
-    let mut grouped: HashMap<(Ustr, String), Vec<NodeId>> = HashMap::new();
-    for &child in &dom.node(parent).children {
-        if used.contains(&child) {
-            continue;
-        }
-        let node = dom.node(child);
-        grouped
-            .entry((node.class, node.name.clone()))
-            .or_default()
-            .push(child);
-    }
-    grouped
-        .into_iter()
-        .filter_map(|(key, nodes)| (nodes.len() == 1).then_some((key, nodes[0])))
-        .collect()
 }
 
 fn find_added_match(

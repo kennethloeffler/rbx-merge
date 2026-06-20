@@ -52,6 +52,26 @@ pub(crate) fn dropped_reference_diagnostic(path: String, property: &str, target:
     }
 }
 
+/// Several same-name, same-class siblings that lack a `UniqueId` and so have no
+/// authoritative identity. They were paired across sides by position, which is
+/// correct when they were left in place but may misattribute edits if the
+/// siblings were reordered.
+pub(crate) fn positional_identity_diagnostic(
+    path: String,
+    class: &str,
+    name: &str,
+    count: usize,
+) -> Diagnostic {
+    Diagnostic {
+        severity: DiagnosticSeverity::Warning,
+        code: "positional_identity".to_owned(),
+        message: format!(
+            "{count} same-named {name:?} ({class}) children without UniqueId were matched by position; identity may be wrong if siblings were reordered"
+        ),
+        path: Some(path),
+    }
+}
+
 /// An added instance on the `theirs` side that could have matched more than one
 /// added instance on `ours`. Matching is deterministic and conservative, so the
 /// instance is treated as a distinct addition; this records that a guess was

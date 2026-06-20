@@ -40,7 +40,12 @@ fn edit_strategy() -> impl Strategy<Value = Edit> {
     ]
 }
 
-fn apply_edit(dom: &mut WeakDom, edit: &Edit, counter: &mut u32) {
+/// Name space for derived instances: effectively unbounded names keep every
+/// instance distinct, while a small space forces same-name/same-class siblings.
+const UNIQUE_NAMES: u32 = u32::MAX;
+const FEW_NAMES: u32 = 2;
+
+fn apply_edit(dom: &mut WeakDom, edit: &Edit, counter: &mut u32, name_space: u32) {
     let root = dom.root_ref();
     let targets: Vec<_> = dom
         .descendants()
@@ -52,7 +57,7 @@ fn apply_edit(dom: &mut WeakDom, edit: &Edit, counter: &mut u32) {
     }
     let pick = |index: usize| targets[index % targets.len()];
     let mut fresh_name = |prefix: char| {
-        let name = format!("{prefix}{counter}");
+        let name = format!("{prefix}{}", *counter % name_space);
         *counter += 1;
         name
     };
@@ -80,20 +85,20 @@ fn apply_edit(dom: &mut WeakDom, edit: &Edit, counter: &mut u32) {
         }
         Edit::MoveToEnd(index) => {
             let referent = pick(index);
-            if let Some(parent) = dom.get_by_ref(referent).map(|instance| instance.parent()) {
-                if parent.is_some() {
-                    dom.transfer_within(referent, parent);
-                }
+            if let Some(parent) = dom.get_by_ref(referent).map(|instance| instance.parent())
+                && parent.is_some()
+            {
+                dom.transfer_within(referent, parent);
             }
         }
     }
 }
 
-fn derive(base: &[u8], path: &Path, edits: &[Edit]) -> Vec<u8> {
+fn derive(base: &[u8], path: &Path, edits: &[Edit], name_space: u32) -> Vec<u8> {
     let mut dom = common::decode_bytes(base, path).expect("decode base fixture");
     let mut counter = 0;
     for edit in edits {
-        apply_edit(&mut dom, edit, &mut counter);
+        apply_edit(&mut dom, edit, &mut counter, name_space);
     }
     common::encode_fixture(&dom, path).expect("encode derived side")
 }
@@ -102,17 +107,22 @@ fn semantic_text(bytes: &[u8], path: &Path) -> String {
     textconv(bytes, Some(path)).expect("textconv")
 }
 
-/// Merge the three sides and return the merged output's semantic text, or
-/// `None` if the merge reported conflicts.
-fn merged_text(base: &[u8], ours: &[u8], theirs: &[u8], path: &Path) -> Option<String> {
-    let report = merge_files(
+/// Merge the three sides, returning the merged bytes or `None` on conflict.
+fn merged_bytes(base: &[u8], ours: &[u8], theirs: &[u8], path: &Path) -> Option<Vec<u8>> {
+    merge_files(
         FileInput::new(base).with_path_hint(path),
         FileInput::new(ours).with_path_hint(path),
         FileInput::new(theirs).with_path_hint(path),
         MergeSettings::default(),
     )
-    .expect("merge should not error");
-    report.merged.map(|bytes| semantic_text(&bytes, path))
+    .expect("merge should not error")
+    .merged
+}
+
+/// Merge the three sides and return the merged output's semantic text, or
+/// `None` if the merge reported conflicts.
+fn merged_text(base: &[u8], ours: &[u8], theirs: &[u8], path: &Path) -> Option<String> {
+    merged_bytes(base, ours, theirs, path).map(|bytes| semantic_text(&bytes, path))
 }
 
 /// A side put through the merge's own normalization (e.g. dropping all-empty
@@ -144,9 +154,9 @@ fn no_op_merge_is_clean_and_stable() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(96))]
 
-    /// A change on one side with the other side unchanged always merges cleanly
-    /// and reproduces the normalized changed side. Conflict detection is
-    /// symmetric under swapping `ours` and `theirs`.
+    /// With every instance distinctly named, a change on one side with the other
+    /// unchanged always merges cleanly and reproduces the normalized changed
+    /// side. Conflict detection is symmetric under swapping `ours` and `theirs`.
     #[test]
     fn merge_invariants(
         ours_edits in prop::collection::vec(edit_strategy(), 0..6),
@@ -154,8 +164,8 @@ proptest! {
     ) {
         let path = common::model_path("three-intvalues", "xml.rbxmx");
         let base = common::read_fixture(&path).expect("read base");
-        let ours = derive(&base, &path, &ours_edits);
-        let theirs = derive(&base, &path, &theirs_edits);
+        let ours = derive(&base, &path, &ours_edits, UNIQUE_NAMES);
+        let theirs = derive(&base, &path, &theirs_edits, UNIQUE_NAMES);
 
         prop_assert_eq!(
             merged_text(&base, &ours, &base, &path),
@@ -169,5 +179,25 @@ proptest! {
         let forward_clean = merged_text(&base, &ours, &theirs, &path).is_some();
         let backward_clean = merged_text(&base, &theirs, &ours, &path).is_some();
         prop_assert_eq!(forward_clean, backward_clean);
+    }
+
+    /// With heavy same-name/same-class collisions the stronger invariants no
+    /// longer hold: positional matching can misattribute reordered siblings (so
+    /// the merge need not equal the normalized side), and conflict detection is
+    /// not symmetric under swapping sides (added-instance matching is
+    /// directional, so ambiguous duplicate additions resolve differently each
+    /// way). Idempotence does still hold — a self-merge is order-stable — so it
+    /// is the invariant worth pinning down for duplicates.
+    #[test]
+    fn duplicate_name_idempotence(
+        ours_edits in prop::collection::vec(edit_strategy(), 0..6),
+    ) {
+        let path = common::model_path("three-intvalues", "xml.rbxmx");
+        let base = common::read_fixture(&path).expect("read base");
+        let ours = derive(&base, &path, &ours_edits, FEW_NAMES);
+
+        let once = merged_bytes(&ours, &ours, &ours, &path).expect("self-merge is clean");
+        let twice = merged_bytes(&once, &once, &once, &path).expect("self-merge is clean");
+        prop_assert_eq!(semantic_text(&once, &path), semantic_text(&twice, &path));
     }
 }

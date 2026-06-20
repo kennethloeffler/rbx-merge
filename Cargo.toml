@@ -8,7 +8,6 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
 
 [workspace.dependencies]
 # rbx_binary = { path = "../rbx-dom/rbx_binary" }

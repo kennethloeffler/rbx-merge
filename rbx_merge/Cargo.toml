@@ -2,7 +2,7 @@
 name = "rbx_merge"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT"
 
 [dependencies]
 blake3.workspace = true

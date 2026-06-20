@@ -1,0 +1,16 @@
+---
+source: rbx_merge/src/tests/merge.rs
+expression: "textconv(&merged, Some(&path))?"
+---
+# Roblox semantic textconv (XML model (.rbxmx))
+/ [DataModel] id=path:/
+  Children:
+    0: /Folder [Folder] id=path:/Folder
+  /Folder [Folder] id=path:/Folder
+    Properties:
+      Tags = []
+    Children:
+      0: /Folder/Merge Added [StringValue] id=path:/Folder/Merge Added
+    /Folder/Merge Added [StringValue] id=path:/Folder/Merge Added
+      Properties:
+        Value = "ours"

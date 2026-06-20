@@ -16,6 +16,7 @@ blake3 = "1.8"
 clap = { version = "4.5", features = ["derive"] }
 env_logger = "0.11"
 indexmap = "2.12"
+insta = { version = "1.14.1", features = ["yaml"] }
 log = "0.4"
 rbx_binary = { path = "../rbx-dom/rbx_binary" }
 rbx_dom_weak = { path = "../rbx-dom/rbx_dom_weak" }

@@ -1,0 +1,20 @@
+---
+source: rbx_merge/src/tests/merge.rs
+expression: diagnostics
+---
+[
+    Diagnostic {
+        severity: Warning,
+        code: "weak_dom_metadata",
+        message: "WeakDom does not model every Roblox file-level metadata field; this prototype is semantic, not byte-perfect.",
+        path: None,
+    },
+    Diagnostic {
+        severity: Info,
+        code: "output_format",
+        message: "merged output encoded as XML model (.rbxmx)",
+        path: Some(
+            "/Users/ken/projects/programming/rbx-merge/../rbx-dom/test-files/models/three-intvalues/xml.rbxmx",
+        ),
+    },
+]

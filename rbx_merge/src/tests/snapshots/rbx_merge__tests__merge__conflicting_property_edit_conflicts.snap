@@ -1,0 +1,30 @@
+---
+source: rbx_merge/src/tests/merge.rs
+expression: conflicts
+---
+[
+    Conflict {
+        kind: PropertyValue,
+        path: "/Value=1337",
+        class: "IntValue",
+        name: "Value=1337",
+        property: Some(
+            "Value",
+        ),
+        base: Some(
+            DisplayValue {
+                text: "Int64(1337)",
+            },
+        ),
+        ours: Some(
+            DisplayValue {
+                text: "Int64(1)",
+            },
+        ),
+        theirs: Some(
+            DisplayValue {
+                text: "Int64(2)",
+            },
+        ),
+    },
+]

@@ -1318,7 +1318,7 @@ fn is_known_property(
         if descriptor.properties.contains_key(property) {
             return true;
         }
-        current = descriptor.superclass;
+        current = descriptor.superclass.as_deref();
     }
     false
 }

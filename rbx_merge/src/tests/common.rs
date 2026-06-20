@@ -35,6 +35,15 @@ pub fn decode_fixture(path: &Path) -> Result<WeakDom> {
     decode_bytes(&bytes, path)
 }
 
+pub fn edit_bytes<F>(bytes: &[u8], path_hint: &Path, edit: F) -> Result<Vec<u8>>
+where
+    F: FnOnce(&mut WeakDom) -> Result<()>,
+{
+    let mut dom = decode_bytes(bytes, path_hint)?;
+    edit(&mut dom)?;
+    encode_fixture(&dom, path_hint)
+}
+
 pub fn decode_bytes(bytes: &[u8], path_hint: &Path) -> Result<WeakDom> {
     match file_format(path_hint)? {
         FileFormat::XmlModel | FileFormat::XmlPlace => {
@@ -82,6 +91,15 @@ pub fn merge_fixture_bytes(
         },
         options,
     )?)
+}
+
+/// Run `f` (which contains the snapshot assertion) with an insta filter that
+/// rewrites absolute fixture paths to be relative to the repository root, so
+/// snapshots do not embed a machine-specific prefix.
+pub fn with_path_redaction<R>(f: impl FnOnce() -> R) -> R {
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(r#"[^"]*/rbx-test-files/"#, "rbx-test-files/");
+    settings.bind(f)
 }
 
 pub fn expect_clean(result: MergeResult) -> (Vec<u8>, Vec<Diagnostic>) {
@@ -155,8 +173,51 @@ pub fn insert_child(dom: &mut WeakDom, parent_name: &str, child: InstanceBuilder
     Ok(dom.insert(parent, child))
 }
 
+pub fn insert_child_at_root(dom: &mut WeakDom, child: InstanceBuilder) -> Ref {
+    let root = dom.root_ref();
+    dom.insert(root, child)
+}
+
+pub fn delete_instance(dom: &mut WeakDom, name: &str) -> Result<()> {
+    let referent = find_by_name(dom, name)?;
+    dom.destroy(referent);
+    Ok(())
+}
+
+pub fn reparent(dom: &mut WeakDom, child_name: &str, new_parent_name: &str) -> Result<()> {
+    let child = find_by_name(dom, child_name)?;
+    let parent = find_by_name(dom, new_parent_name)?;
+    dom.transfer_within(child, parent);
+    Ok(())
+}
+
+/// Move an instance to the end of its current parent's child list, which
+/// reorders siblings without changing the tree shape.
+pub fn move_to_end(dom: &mut WeakDom, name: &str) -> Result<()> {
+    let referent = find_by_name(dom, name)?;
+    let parent = dom
+        .get_by_ref(referent)
+        .with_context(|| format!("instance named {name:?} disappeared"))?
+        .parent();
+    dom.transfer_within(referent, parent);
+    Ok(())
+}
+
 pub fn stable_ref(value: u128) -> Ref {
     Ref::some(value)
+}
+
+pub fn child_names(dom: &WeakDom, parent: Ref) -> Vec<String> {
+    dom.get_by_ref(parent)
+        .map(|instance| {
+            instance
+                .children()
+                .iter()
+                .filter_map(|child| dom.get_by_ref(*child))
+                .map(|child| child.name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn test_files_root() -> PathBuf {
@@ -165,13 +226,13 @@ fn test_files_root() -> PathBuf {
         .parent()
         .expect("rbx_merge should live under the workspace root");
 
-    let rbx_dom_submodule = workspace_dir.join("../rbx-dom/test-files");
+    let test_files = workspace_dir.join("rbx-test-files");
     assert!(
-        rbx_dom_submodule.exists(),
-        "could not find rbx-test-files submodule at {}",
-        rbx_dom_submodule.display()
+        test_files.join("models").is_dir(),
+        "could not find the rbx-test-files submodule at {}; run `git submodule update --init`",
+        test_files.display()
     );
-    rbx_dom_submodule
+    test_files
 }
 
 fn file_format(path: &Path) -> Result<FileFormat> {

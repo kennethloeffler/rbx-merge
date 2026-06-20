@@ -1,0 +1,53 @@
+//! Diagnostics emitted alongside merge and textconv results.
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiagnosticSeverity {
+    Info,
+    Warning,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub severity: DiagnosticSeverity,
+    pub code: String,
+    pub message: String,
+    pub path: Option<String>,
+}
+
+pub(crate) fn metadata_diagnostic() -> Diagnostic {
+    Diagnostic {
+        severity: DiagnosticSeverity::Warning,
+        code: "weak_dom_metadata".to_owned(),
+        message: "WeakDom does not model every Roblox file-level metadata field; this prototype is semantic, not byte-perfect.".to_owned(),
+        path: None,
+    }
+}
+
+/// A property on the merged output that the reflection database does not know
+/// about. It is preserved as-is, but flagged so callers can audit lossy or
+/// format-specific round-tripping at a concrete location.
+pub(crate) fn unknown_property_diagnostic(path: String, class: &str, property: &str) -> Diagnostic {
+    Diagnostic {
+        severity: DiagnosticSeverity::Info,
+        code: "unknown_property".to_owned(),
+        message: format!(
+            "property {property:?} on class {class:?} is not in the reflection database; preserved as-is"
+        ),
+        path: Some(path),
+    }
+}
+
+/// An added instance on the `theirs` side that could have matched more than one
+/// added instance on `ours`. Matching is deterministic and conservative, so the
+/// instance is treated as a distinct addition; this records that a guess was
+/// declined so callers can review potential duplicates.
+pub(crate) fn ambiguous_identity_diagnostic(path: String) -> Diagnostic {
+    Diagnostic {
+        severity: DiagnosticSeverity::Warning,
+        code: "ambiguous_identity".to_owned(),
+        message:
+            "added instance matched multiple candidates across sides; treated as a distinct addition"
+                .to_owned(),
+        path: Some(path),
+    }
+}

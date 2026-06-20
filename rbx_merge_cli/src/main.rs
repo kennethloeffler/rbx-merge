@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf, process::ExitCode};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use rbx_merge::{Conflict, MergeInput, MergeOptions, MergeResult, merge, textconv};
+use rbx_merge::{Conflict, Diagnostic, FileInput, MergeSettings, merge_files, textconv};
 
 #[derive(Debug, Parser)]
 #[command(name = "rbx-merge")]
@@ -70,42 +70,27 @@ fn run() -> Result<ExitCode> {
                 fs::read(&ours).with_context(|| format!("failed to read {}", ours.display()))?;
             let theirs_bytes = fs::read(&theirs)
                 .with_context(|| format!("failed to read {}", theirs.display()))?;
-            let path_hint = Some(path.as_deref().unwrap_or(out.as_path()));
+            // The in-repo path carries the real extension; the %O/%A/%B temp
+            // files passed by Git often do not, so it is the better format hint.
+            let hint = path.as_deref().unwrap_or(out.as_path());
 
-            match merge(
-                MergeInput {
-                    base: &base_bytes,
-                    ours: &ours_bytes,
-                    theirs: &theirs_bytes,
-                    path_hint,
-                },
-                MergeOptions::default(),
-            )? {
-                MergeResult::Clean {
-                    merged,
-                    diagnostics,
-                } => {
-                    for diagnostic in diagnostics {
-                        eprintln!(
-                            "diagnostic {:?} {}: {}",
-                            diagnostic.severity, diagnostic.code, diagnostic.message
-                        );
-                    }
+            let report = merge_files(
+                FileInput::new(&base_bytes).with_path_hint(hint),
+                FileInput::new(&ours_bytes).with_path_hint(hint),
+                FileInput::new(&theirs_bytes).with_path_hint(hint),
+                MergeSettings::default(),
+            )?;
+
+            print_diagnostics(&report.diagnostics);
+
+            match report.merged {
+                Some(merged) if report.conflicts.is_empty() => {
                     fs::write(&out, merged)
                         .with_context(|| format!("failed to write {}", out.display()))?;
                     Ok(ExitCode::SUCCESS)
                 }
-                MergeResult::Conflicted {
-                    conflicts,
-                    diagnostics,
-                } => {
-                    for diagnostic in diagnostics {
-                        eprintln!(
-                            "diagnostic {:?} {}: {}",
-                            diagnostic.severity, diagnostic.code, diagnostic.message
-                        );
-                    }
-                    print_conflicts(&conflicts);
+                _ => {
+                    print_conflicts(&report.conflicts);
                     Ok(ExitCode::from(1))
                 }
             }
@@ -126,6 +111,22 @@ fn run() -> Result<ExitCode> {
             print!("{new_text}");
             Ok(ExitCode::SUCCESS)
         }
+    }
+}
+
+fn print_diagnostics(diagnostics: &[Diagnostic]) {
+    for diagnostic in diagnostics {
+        eprintln!(
+            "diagnostic {:?} {}: {}{}",
+            diagnostic.severity,
+            diagnostic.code,
+            diagnostic.message,
+            diagnostic
+                .path
+                .as_deref()
+                .map(|path| format!(" ({path})"))
+                .unwrap_or_default(),
+        );
     }
 }
 

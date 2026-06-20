@@ -1,8 +1,11 @@
 use anyhow::Result;
 use rbx_dom_weak::InstanceBuilder;
+use rbx_types::{UniqueId, Variant};
 
 use super::common;
-use crate::{ConflictKind, MergeOptions, textconv};
+use crate::{
+    ConflictKind, DiagnosticSeverity, FileInput, MergeOptions, MergeSettings, merge_files, textconv,
+};
 
 #[test]
 fn clean_one_sided_property_edit_snapshots_output() -> Result<()> {
@@ -15,7 +18,9 @@ fn clean_one_sided_property_edit_snapshots_output() -> Result<()> {
     let result = common::merge_fixture_bytes(&base, &ours, &base, &path, MergeOptions::default())?;
     let (merged, diagnostics) = common::expect_clean(result);
 
-    insta::assert_debug_snapshot!("clean_one_sided_property_edit_diagnostics", diagnostics);
+    common::with_path_redaction(|| {
+        insta::assert_debug_snapshot!("clean_one_sided_property_edit_diagnostics", diagnostics);
+    });
     insta::assert_snapshot!(
         "clean_one_sided_property_edit_output_xml",
         common::xml_string(&merged)?
@@ -71,7 +76,9 @@ fn clean_one_sided_add_snapshots_output() -> Result<()> {
     let result = common::merge_fixture_bytes(&base, &ours, &base, &path, MergeOptions::default())?;
     let (merged, diagnostics) = common::expect_clean(result);
 
-    insta::assert_debug_snapshot!("clean_one_sided_add_diagnostics", diagnostics);
+    common::with_path_redaction(|| {
+        insta::assert_debug_snapshot!("clean_one_sided_add_diagnostics", diagnostics);
+    });
     insta::assert_snapshot!(
         "clean_one_sided_add_output_xml",
         common::xml_string(&merged)?
@@ -102,5 +109,242 @@ fn unchanged_real_model_does_not_serialize_synthetic_datamodel() -> Result<()> {
         "unchanged_real_model_output_xml",
         common::xml_string(&merged)?
     );
+    Ok(())
+}
+
+#[test]
+fn clean_one_sided_rename_keeps_new_name() -> Result<()> {
+    let path = common::model_path("three-intvalues", "xml.rbxmx");
+    let base = common::read_fixture(&path)?;
+    let ours = common::edit_fixture(&path, |dom| {
+        common::rename_instance(dom, "Value=1337", "Renamed")
+    })?;
+
+    let result = common::merge_fixture_bytes(&base, &ours, &base, &path, MergeOptions::default())?;
+    let (merged, _) = common::expect_clean(result);
+    let decoded = common::decode_bytes(&merged, &path)?;
+
+    let names = common::child_names(&decoded, decoded.root_ref());
+    assert!(names.contains(&"Renamed".to_owned()), "names were {names:?}");
+    assert!(!names.contains(&"Value=1337".to_owned()));
+    Ok(())
+}
+
+#[test]
+fn clean_one_sided_delete_removes_instance() -> Result<()> {
+    let path = common::model_path("three-intvalues", "xml.rbxmx");
+    let base = common::read_fixture(&path)?;
+    let ours = common::edit_fixture(&path, |dom| common::delete_instance(dom, "Value=1337"))?;
+
+    let result = common::merge_fixture_bytes(&base, &ours, &base, &path, MergeOptions::default())?;
+    let (merged, _) = common::expect_clean(result);
+    let decoded = common::decode_bytes(&merged, &path)?;
+
+    let names = common::child_names(&decoded, decoded.root_ref());
+    assert_eq!(names.len(), 2);
+    assert!(!names.contains(&"Value=1337".to_owned()));
+    Ok(())
+}
+
+#[test]
+fn delete_versus_modify_conflicts() -> Result<()> {
+    let path = common::model_path("three-intvalues", "xml.rbxmx");
+    let base = common::read_fixture(&path)?;
+    let ours = common::edit_fixture(&path, |dom| common::delete_instance(dom, "Value=1337"))?;
+    let theirs = common::edit_fixture(&path, |dom| {
+        common::set_property(dom, "Value=1337", "Value", 42_i64)
+    })?;
+
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let (conflicts, _) = common::expect_conflicted(result);
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|conflict| conflict.kind == ConflictKind::DeleteModify),
+        "expected a DeleteModify conflict, got {conflicts:#?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn child_order_independent_additions_merge_cleanly() -> Result<()> {
+    let path = common::model_path("three-intvalues", "xml.rbxmx");
+    let base = common::read_fixture(&path)?;
+    let ours = common::edit_fixture(&path, |dom| {
+        common::insert_child_at_root(dom, InstanceBuilder::new("StringValue").with_name("OurAdd"));
+        Ok(())
+    })?;
+    let theirs = common::edit_fixture(&path, |dom| {
+        common::insert_child_at_root(
+            dom,
+            InstanceBuilder::new("StringValue").with_name("TheirAdd"),
+        );
+        Ok(())
+    })?;
+
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let (merged, _) = common::expect_clean(result);
+    let decoded = common::decode_bytes(&merged, &path)?;
+
+    let names = common::child_names(&decoded, decoded.root_ref());
+    assert!(names.contains(&"OurAdd".to_owned()), "names were {names:?}");
+    assert!(names.contains(&"TheirAdd".to_owned()), "names were {names:?}");
+    assert_eq!(names.len(), 5);
+    Ok(())
+}
+
+#[test]
+fn child_order_divergent_reorder_conflicts() -> Result<()> {
+    let path = common::model_path("three-intvalues", "xml.rbxmx");
+    let base = common::read_fixture(&path)?;
+    let ours = common::edit_fixture(&path, |dom| common::move_to_end(dom, "Value=1234567"))?;
+    let theirs = common::edit_fixture(&path, |dom| common::move_to_end(dom, "Value=1337"))?;
+
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let (conflicts, _) = common::expect_conflicted(result);
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|conflict| conflict.kind == ConflictKind::ChildOrder),
+        "expected a ChildOrder conflict, got {conflicts:#?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn parent_move_one_sided_merges_cleanly() -> Result<()> {
+    let path = common::model_path("default-inserted-folder", "xml.rbxmx");
+    let base = common::edit_fixture(&path, build_reparent_scaffold)?;
+    let ours = common::edit_bytes(&base, &path, |dom| common::reparent(dom, "Leaf", "P1"))?;
+
+    let result = common::merge_fixture_bytes(&base, &ours, &base, &path, MergeOptions::default())?;
+    let (merged, _) = common::expect_clean(result);
+    let decoded = common::decode_bytes(&merged, &path)?;
+
+    let p1 = common::find_by_name(&decoded, "P1")?;
+    assert!(common::child_names(&decoded, p1).contains(&"Leaf".to_owned()));
+    Ok(())
+}
+
+#[test]
+fn parent_move_divergent_conflicts() -> Result<()> {
+    let path = common::model_path("default-inserted-folder", "xml.rbxmx");
+    let base = common::edit_fixture(&path, build_reparent_scaffold)?;
+    let ours = common::edit_bytes(&base, &path, |dom| common::reparent(dom, "Leaf", "P1"))?;
+    let theirs = common::edit_bytes(&base, &path, |dom| common::reparent(dom, "Leaf", "P2"))?;
+
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let (conflicts, _) = common::expect_conflicted(result);
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|conflict| conflict.kind == ConflictKind::ParentMove),
+        "expected a ParentMove conflict, got {conflicts:#?}"
+    );
+    Ok(())
+}
+
+/// Adds two sibling folders `P1`/`P2` and a `Leaf` under the existing `Folder`.
+/// `Leaf` carries a `UniqueId` so identity matching tracks it across a move
+/// instead of reading the move as a delete plus an add.
+fn build_reparent_scaffold(dom: &mut rbx_dom_weak::WeakDom) -> Result<()> {
+    common::insert_child_at_root(dom, InstanceBuilder::new("Folder").with_name("P1"));
+    common::insert_child_at_root(dom, InstanceBuilder::new("Folder").with_name("P2"));
+    common::insert_child(
+        dom,
+        "Folder",
+        InstanceBuilder::new("StringValue")
+            .with_name("Leaf")
+            .with_property("UniqueId", Variant::UniqueId(UniqueId::new(7, 7, 7))),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn ambiguous_added_match_reports_diagnostic() -> Result<()> {
+    let path = common::model_path("default-inserted-folder", "xml.rbxmx");
+    let base = common::read_fixture(&path)?;
+    let ours = common::edit_fixture(&path, |dom| {
+        common::insert_child(dom, "Folder", InstanceBuilder::new("StringValue").with_name("Dup"))?;
+        common::insert_child(dom, "Folder", InstanceBuilder::new("StringValue").with_name("Dup"))?;
+        Ok(())
+    })?;
+    let theirs = common::edit_fixture(&path, |dom| {
+        common::insert_child(dom, "Folder", InstanceBuilder::new("StringValue").with_name("Dup"))?;
+        Ok(())
+    })?;
+
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let (_, diagnostics) = common::expect_clean(result);
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "ambiguous_identity"),
+        "expected an ambiguous_identity diagnostic, got {diagnostics:#?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn unknown_property_is_reported() -> Result<()> {
+    let path = common::model_path("three-intvalues", "xml.rbxmx");
+    let base = common::read_fixture(&path)?;
+    let ours = common::edit_fixture(&path, |dom| {
+        common::set_property(dom, "Value=1337", "CustomMergeField", "hello")
+    })?;
+
+    let result = common::merge_fixture_bytes(&base, &ours, &base, &path, MergeOptions::default())?;
+    let (_, diagnostics) = common::expect_clean(result);
+
+    let unknown = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "unknown_property")
+        .unwrap_or_else(|| panic!("expected an unknown_property diagnostic, got {diagnostics:#?}"));
+    assert_eq!(unknown.severity, DiagnosticSeverity::Info);
+    assert!(unknown.message.contains("CustomMergeField"));
+    Ok(())
+}
+
+#[test]
+fn binary_no_op_merge_round_trips() -> Result<()> {
+    let path = common::model_path("attributes", "binary.rbxm");
+    let base = common::read_fixture(&path)?;
+
+    let result = common::merge_fixture_bytes(&base, &base, &base, &path, MergeOptions::default())?;
+    let (merged, _) = common::expect_clean(result);
+
+    assert!(merged.starts_with(b"<roblox!"), "output was not binary");
+    // Re-decoding must succeed and preserve the instance count.
+    let original = common::decode_bytes(&base, &path)?;
+    let decoded = common::decode_bytes(&merged, &path)?;
+    assert_eq!(
+        decoded.root().children().len(),
+        original.root().children().len()
+    );
+    Ok(())
+}
+
+#[test]
+fn merge_files_report_exposes_clean_output() -> Result<()> {
+    let path = common::model_path("three-intvalues", "xml.rbxmx");
+    let base = common::read_fixture(&path)?;
+    let ours = common::edit_fixture(&path, |dom| {
+        common::set_property(dom, "Value=1337", "Value", 9001_i64)
+    })?;
+
+    let report = merge_files(
+        FileInput::new(&base).with_path_hint(&path),
+        FileInput::new(&ours).with_path_hint(&path),
+        FileInput::new(&base).with_path_hint(&path),
+        MergeSettings::default(),
+    )?;
+
+    assert!(report.is_clean());
+    assert!(report.conflicts.is_empty());
+    assert!(report.merged.is_some());
     Ok(())
 }

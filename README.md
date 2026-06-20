@@ -7,6 +7,28 @@ This repository contains two crates:
 - `rbx_merge`: VCS-neutral backend library that decodes Roblox files, produces deterministic semantic text, and performs conservative three-way merges.
 - `rbx_merge_cli`: `rbx-merge` command-line adapter for Git-style workflows.
 
+## Library Architecture
+
+`rbx_merge` is split into focused modules:
+
+- `format`: file-format detection and binary/XML decode/encode.
+- `semantic`: the format-independent instance model and value-equality logic.
+- `identity`: cross-side instance matching (which base/ours/theirs nodes are "the same").
+- `merge_graph`: the three-way merge, child-order resolution, reference-target and unique-id checks, and lowering back to a `WeakDom`.
+- `render`: per-value display strings and the deterministic `textconv` tree.
+- `diagnostics` / `conflict`: the reported diagnostic and conflict/report types.
+
+The primary entry point is `merge_files(base, ours, theirs, settings)`, taking a
+side-specific `FileInput { bytes, path_hint, format }` per side and returning a
+`MergeReport { merged: Option<Vec<u8>>, conflicts, diagnostics }`. The older
+`merge(MergeInput, MergeOptions) -> MergeResult` remains as a convenience
+wrapper.
+
+Diagnostics call out concrete locations: unknown (non-reflected) properties
+preserved in the output, and ambiguous identity matches that were declined to
+keep merging deterministic. References whose target was deleted in the merge are
+reported as `RefTarget` conflicts rather than silently dropped.
+
 ## Commands
 
 ```sh

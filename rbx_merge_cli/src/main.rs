@@ -3,7 +3,8 @@ use std::{fs, path::PathBuf, process::ExitCode};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use rbx_merge::{
-    Conflict, Diagnostic, FileInput, MergeSettings, Resolutions, Side, merge_files, textconv,
+    Conflict, ConflictKind, Diagnostic, FileInput, MergeSettings, Resolutions, Side, merge_files,
+    textconv,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -50,6 +51,12 @@ enum Command {
         /// Resolve every otherwise-unresolved conflict by taking this side.
         #[arg(long, value_enum)]
         take: Option<TakeSide>,
+        /// Apply per-conflict choices from an edited conflict report file.
+        #[arg(long)]
+        resolutions: Option<PathBuf>,
+        /// On conflict, write an editable conflict report to this path.
+        #[arg(long)]
+        conflicts_out: Option<PathBuf>,
     },
     Diff {
         old: PathBuf,
@@ -86,6 +93,8 @@ fn run() -> Result<ExitCode> {
             out,
             path,
             take,
+            resolutions: resolutions_path,
+            conflicts_out,
         } => {
             let base_bytes =
                 fs::read(&base).with_context(|| format!("failed to read {}", base.display()))?;
@@ -97,10 +106,19 @@ fn run() -> Result<ExitCode> {
             // files passed by Git often do not, so it is the better format hint.
             let hint = path.as_deref().unwrap_or(out.as_path());
 
-            let resolutions = match take {
+            // A bulk --take sets the default; a --resolutions file layers
+            // per-conflict overrides on top of it.
+            let mut resolutions = match take {
                 Some(side) => Resolutions::take(side.into()),
                 None => Resolutions::none(),
             };
+            if let Some(file) = &resolutions_path {
+                let text = fs::read_to_string(file)
+                    .with_context(|| format!("failed to read {}", file.display()))?;
+                resolutions = parse_resolutions(resolutions, &text)
+                    .with_context(|| format!("failed to parse resolutions in {}", file.display()))?;
+            }
+
             let report = merge_files(
                 FileInput::new(&base_bytes).with_path_hint(hint),
                 FileInput::new(&ours_bytes).with_path_hint(hint),
@@ -121,6 +139,15 @@ fn run() -> Result<ExitCode> {
                 }
                 _ => {
                     print_conflicts(&report.conflicts);
+                    if let Some(report_path) = &conflicts_out {
+                        fs::write(report_path, write_conflict_report(&report.conflicts))
+                            .with_context(|| format!("failed to write {}", report_path.display()))?;
+                        eprintln!(
+                            "wrote conflict report to {}; edit `resolution` values and re-run with --resolutions {}",
+                            report_path.display(),
+                            report_path.display()
+                        );
+                    }
                     Ok(ExitCode::from(1))
                 }
             }
@@ -141,6 +168,105 @@ fn run() -> Result<ExitCode> {
             print!("{new_text}");
             Ok(ExitCode::SUCCESS)
         }
+    }
+}
+
+/// Render conflicts as an editable report: each block's `resolution` starts at
+/// `unresolved` and the user changes it to `ours`, `theirs`, or `base`.
+fn write_conflict_report(conflicts: &[Conflict]) -> String {
+    let mut out = String::new();
+    out.push_str("# rbx-merge conflict report\n");
+    out.push_str("# Set `resolution` for each conflict to one of: ours, theirs, base\n");
+    out.push_str("# Then re-run the same merge with --resolutions <this file>.\n");
+    out.push_str("# Note: UniqueIdCollision and RefTarget conflicts cannot be resolved this way.\n\n");
+    for conflict in conflicts {
+        out.push_str("[[conflict]]\n");
+        out.push_str(&format!("kind = {}\n", kind_name(&conflict.kind)));
+        out.push_str(&format!("path = {}\n", conflict.path));
+        out.push_str(&format!(
+            "property = {}\n",
+            conflict.property.as_deref().unwrap_or("<none>")
+        ));
+        if let Some(value) = &conflict.base {
+            out.push_str(&format!("base = {}\n", value.text));
+        }
+        if let Some(value) = &conflict.ours {
+            out.push_str(&format!("ours = {}\n", value.text));
+        }
+        if let Some(value) = &conflict.theirs {
+            out.push_str(&format!("theirs = {}\n", value.text));
+        }
+        out.push_str("resolution = unresolved\n\n");
+    }
+    out
+}
+
+/// Parse an edited conflict report, layering its per-conflict choices onto
+/// `resolutions`. Lines other than `kind`/`path`/`property`/`resolution` (the
+/// informational `base`/`ours`/`theirs` values and comments) are ignored.
+fn parse_resolutions(mut resolutions: Resolutions, text: &str) -> Result<Resolutions> {
+    for block in text.split("[[conflict]]").skip(1) {
+        let mut kind = None;
+        let mut path = None;
+        let mut property = None;
+        let mut side = None;
+        for line in block.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let value = value.trim();
+            match key.trim() {
+                "kind" => kind = parse_kind(value),
+                "path" => path = Some(value.to_owned()),
+                "property" => {
+                    property = (value != "<none>" && !value.is_empty()).then(|| value.to_owned())
+                }
+                "resolution" => side = parse_side(value),
+                _ => {}
+            }
+        }
+        if let (Some(kind), Some(path), Some(side)) = (kind, path, side) {
+            resolutions = resolutions.resolve(kind, path, property, side);
+        }
+    }
+    Ok(resolutions)
+}
+
+fn kind_name(kind: &ConflictKind) -> &'static str {
+    match kind {
+        ConflictKind::InstanceIdentity => "InstanceIdentity",
+        ConflictKind::UniqueIdCollision => "UniqueIdCollision",
+        ConflictKind::DeleteModify => "DeleteModify",
+        ConflictKind::PropertyValue => "PropertyValue",
+        ConflictKind::ParentMove => "ParentMove",
+        ConflictKind::ChildOrder => "ChildOrder",
+        ConflictKind::RefTarget => "RefTarget",
+    }
+}
+
+fn parse_kind(value: &str) -> Option<ConflictKind> {
+    match value {
+        "InstanceIdentity" => Some(ConflictKind::InstanceIdentity),
+        "UniqueIdCollision" => Some(ConflictKind::UniqueIdCollision),
+        "DeleteModify" => Some(ConflictKind::DeleteModify),
+        "PropertyValue" => Some(ConflictKind::PropertyValue),
+        "ParentMove" => Some(ConflictKind::ParentMove),
+        "ChildOrder" => Some(ConflictKind::ChildOrder),
+        "RefTarget" => Some(ConflictKind::RefTarget),
+        _ => None,
+    }
+}
+
+fn parse_side(value: &str) -> Option<Side> {
+    match value {
+        "ours" => Some(Side::Ours),
+        "theirs" => Some(Side::Theirs),
+        "base" => Some(Side::Base),
+        _ => None,
     }
 }
 

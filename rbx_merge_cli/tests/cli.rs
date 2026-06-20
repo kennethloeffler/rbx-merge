@@ -158,6 +158,71 @@ fn take_ours_resolves_conflict_and_writes_output() {
 }
 
 #[test]
+fn conflict_report_round_trip_resolves() {
+    let scratch = Scratch::new("report");
+    let base = scratch.write("base.rbxmx", &intvalue_model("Counter", 1));
+    let ours = scratch.write("ours.rbxmx", &intvalue_model("Counter", 2));
+    let theirs = scratch.write("theirs.rbxmx", &intvalue_model("Counter", 3));
+    let out = scratch.path("out.rbxmx");
+    let report = scratch.path("conflicts.txt");
+
+    // Step 1: a plain merge conflicts and writes an editable report.
+    let first = Command::new(BIN)
+        .args(["merge", "--base"])
+        .arg(&base)
+        .arg("--ours")
+        .arg(&ours)
+        .arg("--theirs")
+        .arg(&theirs)
+        .arg("--out")
+        .arg(&out)
+        .args(["--path", "model.rbxmx", "--conflicts-out"])
+        .arg(&report)
+        .output()
+        .expect("run merge with --conflicts-out");
+    assert!(!first.status.success(), "the first merge should conflict");
+    let report_text = fs::read_to_string(&report).expect("report written");
+    assert!(report_text.contains("kind = PropertyValue"), "{report_text}");
+    assert!(report_text.contains("resolution = unresolved"), "{report_text}");
+    assert!(!out.exists(), "no output should be written while conflicted");
+
+    // Step 2: the user resolves every conflict in favor of theirs.
+    let edited = report_text.replace("resolution = unresolved", "resolution = theirs");
+    fs::write(&report, edited).expect("write edited report");
+
+    // Step 3: re-running with the edited report resolves cleanly.
+    let second = Command::new(BIN)
+        .args(["merge", "--base"])
+        .arg(&base)
+        .arg("--ours")
+        .arg(&ours)
+        .arg("--theirs")
+        .arg(&theirs)
+        .arg("--out")
+        .arg(&out)
+        .args(["--path", "model.rbxmx", "--resolutions"])
+        .arg(&report)
+        .output()
+        .expect("run merge with --resolutions");
+    assert!(
+        second.status.success(),
+        "resolved merge should succeed, stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    let textconv = Command::new(BIN)
+        .arg("textconv")
+        .arg(&out)
+        .output()
+        .expect("run textconv");
+    let rendered = String::from_utf8_lossy(&textconv.stdout);
+    assert!(
+        rendered.contains("Value = Int64(3)"),
+        "should resolve to theirs, got:\n{rendered}"
+    );
+}
+
+#[test]
 fn textconv_prints_semantic_text() {
     let scratch = Scratch::new("textconv");
     let model = scratch.write("model.rbxmx", &intvalue_model("Counter", 42));

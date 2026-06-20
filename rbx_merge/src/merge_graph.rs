@@ -99,8 +99,15 @@ pub(crate) fn merge_semantic_graph(
     let mut used_refs = HashSet::new();
 
     for (&merge_id, entry) in &identities.entries {
-        if is_deleted_without_conflict(entry, base, ours, theirs, identities, conflicts) {
-            continue;
+        match deletion_decision(entry, base, ours, theirs, identities, resolutions, conflicts) {
+            NodeDecision::Drop => continue,
+            NodeDecision::TakeSide(side) => {
+                let instance =
+                    materialize_from_side(entry, side, &doms, identities, &mut used_refs);
+                graph.nodes.insert(merge_id, instance);
+                continue;
+            }
+            NodeDecision::Merge => {}
         }
 
         let Some(class) = merge_class(entry, base, ours, theirs, resolutions, conflicts) else {
@@ -129,20 +136,80 @@ pub(crate) fn merge_semantic_graph(
     Ok(graph)
 }
 
-fn is_deleted_without_conflict(
+/// What to do with one merge identity before the per-field merge runs.
+enum NodeDecision {
+    /// Proceed with the normal three-way merge.
+    Merge,
+    /// Omit the node (deleted, or a resolved delete/modify favoring deletion).
+    Drop,
+    /// A resolved delete/modify favoring a surviving side: materialize the node
+    /// from that side's content alone.
+    TakeSide(Side),
+}
+
+/// Build a merged instance from a single side's content, used when a
+/// delete/modify conflict was resolved in favor of keeping that side.
+fn materialize_from_side(
+    entry: &MergeEntry,
+    side: Side,
+    doms: &SemanticInputs<'_>,
+    identities: &IdentitySet,
+    used_refs: &mut HashSet<Ref>,
+) -> MergedInstance {
+    let source = side_source(side);
+    let (dom, node_id) = match side {
+        Side::Base => (doms.base, entry.base),
+        Side::Ours => (doms.ours, entry.ours),
+        Side::Theirs => (doms.theirs, entry.theirs),
+    };
+    let node = dom.node(node_id.expect("resolved side has a node"));
+    let parent = node
+        .parent
+        .and_then(|parent| identities.lookup(source, parent));
+    let properties = node
+        .properties
+        .iter()
+        .filter(|(_, value)| !is_empty_attributes(value))
+        .map(|(&key, value)| {
+            (
+                key,
+                MergedProperty {
+                    value: value.clone(),
+                    source,
+                },
+            )
+        })
+        .collect();
+    let referent = choose_referent(entry, doms, used_refs);
+    MergedInstance {
+        class: node.class,
+        name: node.name.clone(),
+        parent,
+        children: Vec::new(),
+        properties,
+        referent,
+    }
+}
+
+fn is_empty_attributes(value: &Variant) -> bool {
+    matches!(value, Variant::Attributes(attributes) if attributes.is_empty())
+}
+
+fn deletion_decision(
     entry: &MergeEntry,
     base: &SemanticDom,
     ours: &SemanticDom,
     theirs: &SemanticDom,
     identities: &IdentitySet,
+    resolutions: &Resolutions,
     conflicts: &mut Vec<Conflict>,
-) -> bool {
+) -> NodeDecision {
     let Some(base_id) = entry.base else {
-        return false;
+        return NodeDecision::Merge;
     };
 
     match (entry.ours, entry.theirs) {
-        (None, None) => true,
+        (None, None) => NodeDecision::Drop,
         (None, Some(theirs_id)) => {
             if side_node_changed_from_base(
                 base_id,
@@ -152,17 +219,10 @@ fn is_deleted_without_conflict(
                 theirs,
                 identities,
             ) {
-                conflicts.push(node_conflict(
-                    ConflictKind::DeleteModify,
-                    base,
-                    base_id,
-                    None,
-                    Some("present in base"),
-                    Some("deleted"),
-                    Some("modified"),
-                ));
+                resolve_delete_modify(entry, base, base_id, "deleted", "modified", resolutions, conflicts)
+            } else {
+                NodeDecision::Drop
             }
-            true
         }
         (Some(ours_id), None) => {
             if side_node_changed_from_base(
@@ -173,20 +233,49 @@ fn is_deleted_without_conflict(
                 ours,
                 identities,
             ) {
-                conflicts.push(node_conflict(
-                    ConflictKind::DeleteModify,
-                    base,
-                    base_id,
-                    None,
-                    Some("present in base"),
-                    Some("modified"),
-                    Some("deleted"),
-                ));
+                resolve_delete_modify(entry, base, base_id, "modified", "deleted", resolutions, conflicts)
+            } else {
+                NodeDecision::Drop
             }
-            true
         }
-        (Some(_), Some(_)) => false,
+        (Some(_), Some(_)) => NodeDecision::Merge,
     }
+}
+
+/// Decide a delete/modify conflict: honor a resolution if one applies (drop when
+/// it favors the deleting side, keep when it favors a surviving side), otherwise
+/// report the conflict and drop the node as before.
+fn resolve_delete_modify(
+    entry: &MergeEntry,
+    base: &SemanticDom,
+    base_id: NodeId,
+    ours_label: &str,
+    theirs_label: &str,
+    resolutions: &Resolutions,
+    conflicts: &mut Vec<Conflict>,
+) -> NodeDecision {
+    let path = base.path(base_id);
+    if let Some(side) = resolutions.lookup(&ConflictKind::DeleteModify, &path, None) {
+        let present = match side {
+            Side::Base => entry.base,
+            Side::Ours => entry.ours,
+            Side::Theirs => entry.theirs,
+        };
+        return match present {
+            Some(_) => NodeDecision::TakeSide(side),
+            None => NodeDecision::Drop,
+        };
+    }
+    conflicts.push(node_conflict(
+        ConflictKind::DeleteModify,
+        base,
+        base_id,
+        None,
+        Some("present in base"),
+        Some(ours_label),
+        Some(theirs_label),
+    ));
+    NodeDecision::Drop
 }
 
 fn side_node_changed_from_base(
@@ -758,34 +847,52 @@ pub(crate) fn assign_child_order(
             .unwrap_or_default();
 
         let merged = merge_child_sequence(&base_seq, &ours_seq, &theirs_seq);
-        match merged {
-            ChildOrderMerge::Clean(children) => {
-                if let Some(node) = graph.nodes.get_mut(&id) {
-                    node.children = children;
-                }
-            }
+        let mut children = match merged {
+            ChildOrderMerge::Clean(children) => children,
             ChildOrderMerge::Conflict => {
                 let (dom, node_id) = conflict_subject(entry, base, ours, theirs);
                 let path = dom.path(node_id);
-                if let Some(side) = resolutions.lookup(&ConflictKind::ChildOrder, &path, None) {
-                    let chosen = pick(side, &base_seq, &ours_seq, &theirs_seq).clone();
-                    if let Some(node) = graph.nodes.get_mut(&id) {
-                        node.children = chosen;
+                match resolutions.lookup(&ConflictKind::ChildOrder, &path, None) {
+                    Some(side) => pick(side, &base_seq, &ours_seq, &theirs_seq).clone(),
+                    None => {
+                        conflicts.push(node_conflict(
+                            ConflictKind::ChildOrder,
+                            dom,
+                            node_id,
+                            None,
+                            Some(child_order_label(&base_seq, graph)),
+                            Some(child_order_label(&ours_seq, graph)),
+                            Some(child_order_label(&theirs_seq, graph)),
+                        ));
+                        continue;
                     }
-                    continue;
                 }
-                conflicts.push(node_conflict(
-                    ConflictKind::ChildOrder,
-                    dom,
-                    node_id,
-                    None,
-                    Some(child_order_label(&base_seq, graph)),
-                    Some(child_order_label(&ours_seq, graph)),
-                    Some(child_order_label(&theirs_seq, graph)),
-                ));
             }
+        };
+
+        // A node kept by a resolved delete/modify survives in the graph but no
+        // side's sequence places it; append any such surviving children so they
+        // are not orphaned out of the output.
+        append_surviving_children(graph, id, &mut children);
+        if let Some(node) = graph.nodes.get_mut(&id) {
+            node.children = children;
         }
         let _ = node;
+    }
+}
+
+/// Append graph children of `parent` that the merged sequence omitted, keeping
+/// them in graph (identity) order for determinism.
+fn append_surviving_children(
+    graph: &MergedGraph,
+    parent: MergeNodeId,
+    children: &mut Vec<MergeNodeId>,
+) {
+    let present: HashSet<MergeNodeId> = children.iter().copied().collect();
+    for (&id, node) in &graph.nodes {
+        if node.parent == Some(parent) && !present.contains(&id) {
+            children.push(id);
+        }
     }
 }
 

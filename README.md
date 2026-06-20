@@ -36,15 +36,25 @@ When the automatic merge cannot settle a conflict, the caller supplies a
 default (`Resolutions::take(Side::Ours)`) plus optional per-conflict overrides
 keyed by conflict kind, instance path, and property
 (`Resolutions::none().resolve(kind, path, property, side)`). Resolution is wired
-through the value-style conflicts (property value, instance identity, parent
-move, child order). Any frontend — a CLI flag, an edited conflict report, a
+through the property value, instance identity, parent move, child order, and
+delete/modify conflicts. Any frontend — a CLI flag, an edited conflict report, a
 Studio plugin — just builds a `Resolutions` and hands it to `merge_files`.
 
-The CLI exposes the bulk form:
+The CLI exposes both a bulk choice and a per-conflict report:
 
 ```sh
+# take one side for every conflict
 rbx-merge merge --base %O --ours %A --theirs %B --out %A --path %P --take ours
+
+# write an editable report, resolve each conflict, then re-run
+rbx-merge merge --base b --ours o --theirs t --out m --conflicts-out conflicts.txt
+#   edit `resolution = ours|theirs|base` for each block in conflicts.txt
+rbx-merge merge --base b --ours o --theirs t --out m --resolutions conflicts.txt
 ```
+
+The report-driven flow needs the three inputs at resolve time, so it suits a
+workflow that keeps them rather than Git's merge driver (which discards the
+base/theirs temporaries once the driver exits non-zero).
 
 ## Commands
 

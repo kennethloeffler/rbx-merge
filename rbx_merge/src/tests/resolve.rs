@@ -79,6 +79,55 @@ fn per_conflict_override_resolves_one_property() -> Result<()> {
     Ok(())
 }
 
+/// base/ours/theirs where ours deletes an instance and theirs modifies it.
+fn delete_modify_inputs() -> Result<ConflictInputs> {
+    let path = common::model_path("three-intvalues", "xml.rbxmx");
+    let base = common::read_fixture(&path)?;
+    let ours = common::edit_fixture(&path, |dom| common::delete_instance(dom, "Value=1337"))?;
+    let theirs = common::edit_fixture(&path, |dom| {
+        common::set_property(dom, "Value=1337", "Value", 42_i64)
+    })?;
+    Ok((base, ours, theirs, path))
+}
+
+fn merge_delete_modify(resolutions: Resolutions) -> Result<(Option<Vec<u8>>, std::path::PathBuf)> {
+    let (base, ours, theirs, path) = delete_modify_inputs()?;
+    let report = merge_files(
+        FileInput::new(&base).with_path_hint(&path),
+        FileInput::new(&ours).with_path_hint(&path),
+        FileInput::new(&theirs).with_path_hint(&path),
+        MergeSettings {
+            resolutions,
+            ..Default::default()
+        },
+    )?;
+    Ok((report.merged, path))
+}
+
+#[test]
+fn delete_modify_take_theirs_keeps_modified_instance() -> Result<()> {
+    let (merged, path) = merge_delete_modify(Resolutions::take(Side::Theirs))?;
+    let merged = merged.expect("take theirs should resolve the delete/modify cleanly");
+    let decoded = common::decode_bytes(&merged, &path)?;
+
+    let names = common::child_names(&decoded, decoded.root_ref());
+    assert_eq!(names.len(), 3, "the modified instance should survive: {names:?}");
+    assert_eq!(merged_value(&merged, &path, "Value=1337")?, 42);
+    Ok(())
+}
+
+#[test]
+fn delete_modify_take_ours_drops_instance() -> Result<()> {
+    let (merged, path) = merge_delete_modify(Resolutions::take(Side::Ours))?;
+    let merged = merged.expect("take ours should resolve the delete/modify cleanly");
+    let decoded = common::decode_bytes(&merged, &path)?;
+
+    let names = common::child_names(&decoded, decoded.root_ref());
+    assert_eq!(names.len(), 2, "the deletion should win: {names:?}");
+    assert!(!names.contains(&"Value=1337".to_owned()));
+    Ok(())
+}
+
 #[test]
 fn unrelated_override_leaves_conflict_unresolved() -> Result<()> {
     // An override for a different property does not touch this conflict.

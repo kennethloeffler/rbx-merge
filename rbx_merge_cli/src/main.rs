@@ -1,8 +1,27 @@
 use std::{fs, path::PathBuf, process::ExitCode};
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
-use rbx_merge::{Conflict, Diagnostic, FileInput, MergeSettings, merge_files, textconv};
+use clap::{Parser, Subcommand, ValueEnum};
+use rbx_merge::{
+    Conflict, Diagnostic, FileInput, MergeSettings, Resolutions, Side, merge_files, textconv,
+};
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum TakeSide {
+    Base,
+    Ours,
+    Theirs,
+}
+
+impl From<TakeSide> for Side {
+    fn from(side: TakeSide) -> Self {
+        match side {
+            TakeSide::Base => Side::Base,
+            TakeSide::Ours => Side::Ours,
+            TakeSide::Theirs => Side::Theirs,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "rbx-merge")]
@@ -28,6 +47,9 @@ enum Command {
         out: PathBuf,
         #[arg(long)]
         path: Option<PathBuf>,
+        /// Resolve every otherwise-unresolved conflict by taking this side.
+        #[arg(long, value_enum)]
+        take: Option<TakeSide>,
     },
     Diff {
         old: PathBuf,
@@ -63,6 +85,7 @@ fn run() -> Result<ExitCode> {
             theirs,
             out,
             path,
+            take,
         } => {
             let base_bytes =
                 fs::read(&base).with_context(|| format!("failed to read {}", base.display()))?;
@@ -74,11 +97,18 @@ fn run() -> Result<ExitCode> {
             // files passed by Git often do not, so it is the better format hint.
             let hint = path.as_deref().unwrap_or(out.as_path());
 
+            let resolutions = match take {
+                Some(side) => Resolutions::take(side.into()),
+                None => Resolutions::none(),
+            };
             let report = merge_files(
                 FileInput::new(&base_bytes).with_path_hint(hint),
                 FileInput::new(&ours_bytes).with_path_hint(hint),
                 FileInput::new(&theirs_bytes).with_path_hint(hint),
-                MergeSettings::default(),
+                MergeSettings {
+                    resolutions,
+                    ..Default::default()
+                },
             )?;
 
             print_diagnostics(&report.diagnostics);

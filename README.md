@@ -29,6 +29,23 @@ preserved in the output, and ambiguous identity matches that were declined to
 keep merging deterministic. References whose target was deleted in the merge are
 reported as `RefTarget` conflicts rather than silently dropped.
 
+## Conflict Resolution
+
+When the automatic merge cannot settle a conflict, the caller supplies a
+`Resolutions` value telling the merge which side to take. It carries a bulk
+default (`Resolutions::take(Side::Ours)`) plus optional per-conflict overrides
+keyed by conflict kind, instance path, and property
+(`Resolutions::none().resolve(kind, path, property, side)`). Resolution is wired
+through the value-style conflicts (property value, instance identity, parent
+move, child order). Any frontend — a CLI flag, an edited conflict report, a
+Studio plugin — just builds a `Resolutions` and hands it to `merge_files`.
+
+The CLI exposes the bulk form:
+
+```sh
+rbx-merge merge --base %O --ours %A --theirs %B --out %A --path %P --take ours
+```
+
 ## Commands
 
 ```sh

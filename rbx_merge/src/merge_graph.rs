@@ -14,6 +14,7 @@ use crate::conflict::{Conflict, ConflictKind, DisplayValue};
 use crate::diagnostics::{Diagnostic, dropped_reference_diagnostic, unknown_property_diagnostic};
 use crate::identity::{IdentitySet, MergeEntry, MergeNodeId};
 use crate::render::display_variant;
+use crate::resolve::{Resolutions, Side};
 use crate::semantic::{
     NodeId, SemanticDom, SemanticInputs, ValueSource, variant_options_equal,
 };
@@ -61,11 +62,29 @@ fn child_merge_ids(
         .collect()
 }
 
+/// Pick one of three per-side values by resolved `Side`.
+fn pick<T>(side: Side, base: T, ours: T, theirs: T) -> T {
+    match side {
+        Side::Base => base,
+        Side::Ours => ours,
+        Side::Theirs => theirs,
+    }
+}
+
+fn side_source(side: Side) -> ValueSource {
+    match side {
+        Side::Base => ValueSource::Base,
+        Side::Ours => ValueSource::Ours,
+        Side::Theirs => ValueSource::Theirs,
+    }
+}
+
 pub(crate) fn merge_semantic_graph(
     base: &SemanticDom,
     ours: &SemanticDom,
     theirs: &SemanticDom,
     identities: &IdentitySet,
+    resolutions: &Resolutions,
     conflicts: &mut Vec<Conflict>,
 ) -> Result<MergedGraph, Error> {
     let doms = SemanticInputs { base, ours, theirs };
@@ -84,14 +103,14 @@ pub(crate) fn merge_semantic_graph(
             continue;
         }
 
-        let Some(class) = merge_class(entry, base, ours, theirs, conflicts) else {
+        let Some(class) = merge_class(entry, base, ours, theirs, resolutions, conflicts) else {
             continue;
         };
-        let Some(name) = merge_name(entry, base, ours, theirs, conflicts) else {
+        let Some(name) = merge_name(entry, base, ours, theirs, resolutions, conflicts) else {
             continue;
         };
-        let parent = merge_parent(entry, base, ours, theirs, identities, conflicts);
-        let properties = merge_properties(entry, &doms, identities, conflicts);
+        let parent = merge_parent(entry, base, ours, theirs, identities, resolutions, conflicts);
+        let properties = merge_properties(entry, &doms, identities, resolutions, conflicts);
         let referent = choose_referent(entry, &doms, &mut used_refs);
 
         graph.nodes.insert(
@@ -247,6 +266,7 @@ fn merge_class(
     base: &SemanticDom,
     ours: &SemanticDom,
     theirs: &SemanticDom,
+    resolutions: &Resolutions,
     conflicts: &mut Vec<Conflict>,
 ) -> Option<Ustr> {
     let base_value = entry.base.map(|id| base.node(id).class);
@@ -254,6 +274,12 @@ fn merge_class(
     let theirs_value = entry.theirs.map(|id| theirs.node(id).class);
     merge_scalar(base_value, ours_value, theirs_value).or_else(|| {
         let (dom, id) = conflict_subject(entry, base, ours, theirs);
+        let path = dom.path(id);
+        if let Some(side) = resolutions.lookup(&ConflictKind::InstanceIdentity, &path, Some("ClassName"))
+            && let Some(resolved) = pick(side, base_value, ours_value, theirs_value)
+        {
+            return Some(resolved);
+        }
         conflicts.push(node_conflict(
             ConflictKind::InstanceIdentity,
             dom,
@@ -272,6 +298,7 @@ fn merge_name(
     base: &SemanticDom,
     ours: &SemanticDom,
     theirs: &SemanticDom,
+    resolutions: &Resolutions,
     conflicts: &mut Vec<Conflict>,
 ) -> Option<String> {
     let base_value = entry.base.map(|id| base.node(id).name.clone());
@@ -279,6 +306,17 @@ fn merge_name(
     let theirs_value = entry.theirs.map(|id| theirs.node(id).name.clone());
     merge_scalar(base_value.clone(), ours_value.clone(), theirs_value.clone()).or_else(|| {
         let (dom, id) = conflict_subject(entry, base, ours, theirs);
+        let path = dom.path(id);
+        if let Some(side) = resolutions.lookup(&ConflictKind::InstanceIdentity, &path, Some("Name"))
+            && let Some(resolved) = pick(
+                side,
+                base_value.clone(),
+                ours_value.clone(),
+                theirs_value.clone(),
+            )
+        {
+            return Some(resolved);
+        }
         conflicts.push(node_conflict(
             ConflictKind::InstanceIdentity,
             dom,
@@ -298,6 +336,7 @@ fn merge_parent(
     ours: &SemanticDom,
     theirs: &SemanticDom,
     identities: &IdentitySet,
+    resolutions: &Resolutions,
     conflicts: &mut Vec<Conflict>,
 ) -> Option<MergeNodeId> {
     let base_parent = entry
@@ -317,6 +356,10 @@ fn merge_parent(
         Ok(parent) => parent,
         Err(()) => {
             let (dom, id) = conflict_subject(entry, base, ours, theirs);
+            let path = dom.path(id);
+            if let Some(side) = resolutions.lookup(&ConflictKind::ParentMove, &path, None) {
+                return pick(side, base_parent, ours_parent, theirs_parent);
+            }
             conflicts.push(node_conflict(
                 ConflictKind::ParentMove,
                 dom,
@@ -335,6 +378,7 @@ fn merge_properties(
     entry: &MergeEntry,
     doms: &SemanticInputs<'_>,
     identities: &IdentitySet,
+    resolutions: &Resolutions,
     conflicts: &mut Vec<Conflict>,
 ) -> BTreeMap<Ustr, MergedProperty> {
     let base_node = entry.base.map(|id| doms.base.node(id));
@@ -375,6 +419,23 @@ fn merge_properties(
             PropertyMerge::Delete => {}
             PropertyMerge::Conflict => {
                 let (dom, id) = conflict_subject(entry, doms.base, doms.ours, doms.theirs);
+                let path = dom.path(id);
+                if let Some(side) =
+                    resolutions.lookup(&ConflictKind::PropertyValue, &path, Some(key.as_str()))
+                {
+                    // The chosen side may not have the property, in which case
+                    // resolving to that side means dropping it.
+                    if let Some(value) = pick(side, base_value, ours_value, theirs_value) {
+                        merged.insert(
+                            key,
+                            MergedProperty {
+                                value: value.clone(),
+                                source: side_source(side),
+                            },
+                        );
+                    }
+                    continue;
+                }
                 conflicts.push(node_conflict(
                     ConflictKind::PropertyValue,
                     dom,
@@ -672,6 +733,7 @@ pub(crate) fn assign_child_order(
     ours: &SemanticDom,
     theirs: &SemanticDom,
     identities: &IdentitySet,
+    resolutions: &Resolutions,
     conflicts: &mut Vec<Conflict>,
 ) {
     let ids: Vec<_> = graph.nodes.keys().copied().collect();
@@ -704,6 +766,14 @@ pub(crate) fn assign_child_order(
             }
             ChildOrderMerge::Conflict => {
                 let (dom, node_id) = conflict_subject(entry, base, ours, theirs);
+                let path = dom.path(node_id);
+                if let Some(side) = resolutions.lookup(&ConflictKind::ChildOrder, &path, None) {
+                    let chosen = pick(side, &base_seq, &ours_seq, &theirs_seq).clone();
+                    if let Some(node) = graph.nodes.get_mut(&id) {
+                        node.children = chosen;
+                    }
+                    continue;
+                }
                 conflicts.push(node_conflict(
                     ConflictKind::ChildOrder,
                     dom,
@@ -713,9 +783,6 @@ pub(crate) fn assign_child_order(
                     Some(child_order_label(&ours_seq, graph)),
                     Some(child_order_label(&theirs_seq, graph)),
                 ));
-                if let Some(node) = graph.nodes.get_mut(&id) {
-                    node.children = node.children.clone();
-                }
             }
         }
         let _ = node;

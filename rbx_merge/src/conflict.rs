@@ -47,7 +47,7 @@ pub enum MergeResult {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ConflictKind {
     InstanceIdentity,
     UniqueIdCollision,

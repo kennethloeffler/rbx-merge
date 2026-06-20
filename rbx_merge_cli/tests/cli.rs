@@ -119,6 +119,45 @@ fn conflicting_merge_fails_without_writing_output() {
 }
 
 #[test]
+fn take_ours_resolves_conflict_and_writes_output() {
+    let scratch = Scratch::new("take-ours");
+    let base = scratch.write("base.rbxmx", &intvalue_model("Counter", 1));
+    let ours = scratch.write("ours.rbxmx", &intvalue_model("Counter", 2));
+    let theirs = scratch.write("theirs.rbxmx", &intvalue_model("Counter", 3));
+    let out = scratch.path("out.rbxmx");
+
+    let output = Command::new(BIN)
+        .args(["merge", "--base"])
+        .arg(&base)
+        .arg("--ours")
+        .arg(&ours)
+        .arg("--theirs")
+        .arg(&theirs)
+        .arg("--out")
+        .arg(&out)
+        .args(["--path", "model.rbxmx", "--take", "ours"])
+        .output()
+        .expect("run rbx-merge merge --take ours");
+    assert!(
+        output.status.success(),
+        "--take ours should resolve the conflict, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(out.exists());
+
+    let textconv = Command::new(BIN)
+        .arg("textconv")
+        .arg(&out)
+        .output()
+        .expect("run textconv");
+    let rendered = String::from_utf8_lossy(&textconv.stdout);
+    assert!(
+        rendered.contains("Value = Int64(2)"),
+        "resolved output should take ours, got:\n{rendered}"
+    );
+}
+
+#[test]
 fn textconv_prints_semantic_text() {
     let scratch = Scratch::new("textconv");
     let model = scratch.write("model.rbxmx", &intvalue_model("Counter", 42));

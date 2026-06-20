@@ -10,6 +10,7 @@ mod format;
 mod identity;
 mod merge_graph;
 mod render;
+mod resolve;
 mod semantic;
 
 use std::path::Path;
@@ -28,21 +29,24 @@ use crate::semantic::{SemanticDom, SemanticInputs};
 pub use crate::conflict::{Conflict, ConflictKind, DisplayValue, MergeReport, MergeResult};
 pub use crate::diagnostics::{Diagnostic, DiagnosticSeverity};
 pub use crate::format::{FileFormat, detect_format};
+pub use crate::resolve::{Resolutions, Side};
 
 use crate::diagnostics::metadata_diagnostic;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ConflictPolicy {
     /// Report conflicts to the caller and emit no merged output. This is
     /// currently the only supported policy.
+    #[default]
     Report,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum UnknownPropertyPolicy {
     /// Preserve properties not present in the reflection database when the
     /// underlying format round-trips them, reporting them as diagnostics. This
     /// is currently the only supported policy.
+    #[default]
     PreserveWhenSupported,
 }
 
@@ -111,21 +115,14 @@ impl<'a> FileInput<'a> {
 
 /// Cross-cutting merge settings. Per-side formats live on each [`FileInput`];
 /// this struct holds only options that apply to the merge as a whole.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct MergeSettings {
     pub output_format: Option<FileFormat>,
     pub conflict_policy: ConflictPolicy,
     pub unknown_property_policy: UnknownPropertyPolicy,
-}
-
-impl Default for MergeSettings {
-    fn default() -> Self {
-        Self {
-            output_format: None,
-            conflict_policy: ConflictPolicy::Report,
-            unknown_property_policy: UnknownPropertyPolicy::PreserveWhenSupported,
-        }
-    }
+    /// How to resolve conflicts the merge cannot settle automatically. Defaults
+    /// to reporting every conflict ([`Resolutions::none`]).
+    pub resolutions: Resolutions,
 }
 
 #[derive(Debug, Error)]
@@ -185,8 +182,14 @@ pub fn merge_files(
     };
 
     let mut conflicts = Vec::new();
-    let mut graph =
-        merge_semantic_graph(&base_dom, &ours_dom, &theirs_dom, &identities, &mut conflicts)?;
+    let mut graph = merge_semantic_graph(
+        &base_dom,
+        &ours_dom,
+        &theirs_dom,
+        &identities,
+        &settings.resolutions,
+        &mut conflicts,
+    )?;
 
     detect_unique_id_collisions(&graph, &mut conflicts);
     detect_ref_targets(&graph, &identities, &doms, &mut conflicts);
@@ -205,6 +208,7 @@ pub fn merge_files(
         &ours_dom,
         &theirs_dom,
         &identities,
+        &settings.resolutions,
         &mut conflicts,
     );
     detect_unique_id_collisions(&graph, &mut conflicts);
@@ -260,6 +264,7 @@ pub fn merge(input: MergeInput<'_>, options: MergeOptions) -> Result<MergeResult
         output_format: options.output_format,
         conflict_policy: options.conflict_policy,
         unknown_property_policy: options.unknown_property_policy,
+        resolutions: Resolutions::none(),
     };
 
     Ok(merge_files(base, ours, theirs, settings)?.into_merge_result())

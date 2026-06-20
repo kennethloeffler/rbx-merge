@@ -194,6 +194,65 @@ fn rename_without_unique_id_merges_with_concurrent_edit() -> Result<()> {
 }
 
 #[test]
+fn rename_with_regenerated_unique_id_is_recovered() -> Result<()> {
+    // Studio can rename an instance *and* regenerate its UniqueId at once. The
+    // rename heuristic must still recognize it as one instance: the regenerated
+    // UniqueId is volatile metadata excluded from the similarity metric, so it
+    // does not drag the score below the rename threshold. Were it counted, the
+    // instance would read as a delete on one side and an add on the other,
+    // turning the concurrent edit on the other side into a delete/modify
+    // conflict instead of a clean merge.
+    let path = common::model_path("default-inserted-folder", "xml.rbxmx");
+    let base_id = UniqueId::new(5, 5, 5);
+    let regenerated = UniqueId::new(6, 6, 6);
+    let base = {
+        let bytes = common::read_fixture(&path)?;
+        common::edit_bytes(&bytes, &path, |dom| {
+            common::insert_child(
+                dom,
+                "Folder",
+                InstanceBuilder::new("IntValue")
+                    .with_name("Counter")
+                    .with_property("UniqueId", Variant::UniqueId(base_id))
+                    .with_property("Value", 1_i64),
+            )?;
+            Ok(())
+        })?
+    };
+    // ours renames the instance and Studio regenerates its UniqueId.
+    let ours = common::edit_bytes(&base, &path, |dom| {
+        common::rename_instance(dom, "Counter", "Tally")?;
+        common::set_property(dom, "Tally", "UniqueId", Variant::UniqueId(regenerated))
+    })?;
+    // theirs edits the same instance's value, keeping its original identity.
+    let theirs = common::edit_bytes(&base, &path, |dom| {
+        common::set_property(dom, "Counter", "Value", 5_i64)
+    })?;
+
+    let result =
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let (merged, diagnostics) = common::expect_clean(result);
+    let decoded = common::decode_bytes(&merged, &path)?;
+
+    let renamed = common::find_by_name(&decoded, "Tally")?;
+    assert!(common::find_by_name(&decoded, "Counter").is_err());
+    match decoded
+        .get_by_ref(renamed)
+        .and_then(|node| node.properties.get(&ustr("Value")))
+    {
+        Some(Variant::Int64(value)) => assert_eq!(*value, 5),
+        other => panic!("expected the edited Value to survive the rename, got {other:?}"),
+    }
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "renamed_instance"),
+        "expected a renamed_instance diagnostic, got {diagnostics:#?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn dissimilar_delete_and_add_is_not_a_rename() -> Result<()> {
     // A genuine delete-plus-add of a property-poor instance is not similar
     // enough to be paired as a rename, so a concurrent edit to the deleted

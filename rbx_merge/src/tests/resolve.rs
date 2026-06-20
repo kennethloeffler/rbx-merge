@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rbx_dom_weak::ustr;
+use rbx_dom_weak::{InstanceBuilder, ustr};
 use rbx_types::Variant;
 
 use super::common;
@@ -125,6 +125,51 @@ fn delete_modify_take_ours_drops_instance() -> Result<()> {
     let names = common::child_names(&decoded, decoded.root_ref());
     assert_eq!(names.len(), 2, "the deletion should win: {names:?}");
     assert!(!names.contains(&"Value=1337".to_owned()));
+    Ok(())
+}
+
+#[test]
+fn ref_target_conflict_is_resolvable() -> Result<()> {
+    // ours repoints the ObjectValue at a new sibling; theirs deletes that
+    // sibling, leaving a dangling reference (a RefTarget conflict). Resolving it
+    // drops the dangling reference and the merge is clean.
+    let path = common::model_path("ref-child", "xml.rbxmx");
+    let base = common::edit_fixture(&path, |dom| {
+        common::insert_child_at_root(dom, InstanceBuilder::new("Folder").with_name("OtherTarget"));
+        Ok(())
+    })?;
+    let ours = common::edit_bytes(&base, &path, |dom| {
+        let other = common::find_by_name(dom, "OtherTarget")?;
+        common::set_property(dom, "Value", "Value", Variant::Ref(other))
+    })?;
+    let theirs =
+        common::edit_bytes(&base, &path, |dom| common::delete_instance(dom, "OtherTarget"))?;
+
+    let report = merge_files(
+        FileInput::new(&base).with_path_hint(&path),
+        FileInput::new(&ours).with_path_hint(&path),
+        FileInput::new(&theirs).with_path_hint(&path),
+        MergeSettings {
+            resolutions: Resolutions::take(Side::Ours),
+            ..Default::default()
+        },
+    )?;
+
+    assert!(report.conflicts.is_empty(), "{:#?}", report.conflicts);
+    let merged = report.merged.expect("RefTarget should be resolvable");
+    let decoded = common::decode_bytes(&merged, &path)?;
+
+    // No surviving reference dangles: any remaining ref resolves in the output.
+    let object_value = common::find_by_name(&decoded, "Value")?;
+    if let Some(Variant::Ref(referent)) = decoded
+        .get_by_ref(object_value)
+        .and_then(|node| node.properties.get(&ustr("Value")))
+    {
+        assert!(
+            referent.is_none() || decoded.get_by_ref(*referent).is_some(),
+            "the dangling reference should have been dropped"
+        );
+    }
     Ok(())
 }
 

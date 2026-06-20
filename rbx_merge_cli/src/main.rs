@@ -178,7 +178,8 @@ fn write_conflict_report(conflicts: &[Conflict]) -> String {
     out.push_str("# rbx-merge conflict report\n");
     out.push_str("# Set `resolution` for each conflict to one of: ours, theirs, base\n");
     out.push_str("# Then re-run the same merge with --resolutions <this file>.\n");
-    out.push_str("# Note: UniqueIdCollision and RefTarget conflicts cannot be resolved this way.\n\n");
+    out.push_str("# For RefTarget and UniqueIdCollision the side is not used: any value\n");
+    out.push_str("# applies the fix (drop the dangling reference / the duplicate UniqueId).\n\n");
     for conflict in conflicts {
         out.push_str("[[conflict]]\n");
         out.push_str(&format!("kind = {}\n", kind_name(&conflict.kind)));

@@ -1013,33 +1013,55 @@ fn append_until_anchor(
 /// same-`UniqueId` additions across sides are unified by identity matching, so
 /// this rarely fires — but the merged graph is assembled independently of those
 /// guarantees, so the check is kept.
-pub(crate) fn detect_unique_id_collisions(graph: &MergedGraph, conflicts: &mut Vec<Conflict>) {
+pub(crate) fn detect_unique_id_collisions(
+    graph: &mut MergedGraph,
+    resolutions: &Resolutions,
+    conflicts: &mut Vec<Conflict>,
+) {
     let mut seen: HashMap<UniqueId, MergeNodeId> = HashMap::new();
-    for (&id, node) in &graph.nodes {
-        let Some(Variant::UniqueId(unique_id)) = node
+    let mut clear: Vec<MergeNodeId> = Vec::new();
+    for id in graph.nodes.keys().copied().collect::<Vec<_>>() {
+        let Some(Variant::UniqueId(unique_id)) = graph.nodes[&id]
             .properties
             .get(&ustr("UniqueId"))
             .map(|property| &property.value)
         else {
             continue;
         };
+        let unique_id = *unique_id;
         if unique_id.is_nil() {
             continue;
         }
-        if let Some(first_id) = seen.insert(*unique_id, id) {
-            let first_path = graph_path(graph, first_id);
-            conflicts.push(Conflict {
-                kind: ConflictKind::UniqueIdCollision,
-                path: graph_path(graph, id),
-                class: node.class.to_string(),
-                name: node.name.clone(),
-                property: Some("UniqueId".to_owned()),
-                base: Some(DisplayValue::new(format!(
-                    "also assigned to {first_path}"
-                ))),
-                ours: Some(DisplayValue::new(unique_id.to_string())),
-                theirs: None,
-            });
+        let Some(&first_id) = seen.get(&unique_id) else {
+            seen.insert(unique_id, id);
+            continue;
+        };
+        let path = graph_path(graph, id);
+        // Resolving a UniqueId collision drops the duplicate id (the side choice
+        // is not meaningful for this kind); the first holder keeps it.
+        if resolutions
+            .lookup(&ConflictKind::UniqueIdCollision, &path, Some("UniqueId"))
+            .is_some()
+        {
+            clear.push(id);
+            continue;
+        }
+        let first_path = graph_path(graph, first_id);
+        let node = &graph.nodes[&id];
+        conflicts.push(Conflict {
+            kind: ConflictKind::UniqueIdCollision,
+            path: path.clone(),
+            class: node.class.to_string(),
+            name: node.name.clone(),
+            property: Some("UniqueId".to_owned()),
+            base: Some(DisplayValue::new(format!("also assigned to {first_path}"))),
+            ours: Some(DisplayValue::new(unique_id.to_string())),
+            theirs: None,
+        });
+    }
+    for id in clear {
+        if let Some(node) = graph.nodes.get_mut(&id) {
+            node.properties.remove(&ustr("UniqueId"));
         }
     }
 }
@@ -1076,9 +1098,10 @@ fn graph_path(graph: &MergedGraph, id: MergeNodeId) -> String {
 /// referent — even one written by the side that performed the deletion — is
 /// recognized as dangling.
 pub(crate) fn detect_ref_targets(
-    graph: &MergedGraph,
+    graph: &mut MergedGraph,
     identities: &IdentitySet,
     doms: &SemanticInputs<'_>,
+    resolutions: &Resolutions,
     conflicts: &mut Vec<Conflict>,
 ) {
     let deleted = dropped_referents(graph, identities, doms);
@@ -1086,6 +1109,7 @@ pub(crate) fn detect_ref_targets(
         return;
     }
 
+    let mut drop_properties: Vec<(MergeNodeId, Ustr)> = Vec::new();
     for (&id, node) in &graph.nodes {
         for (&key, property) in &node.properties {
             let mut referents = Vec::new();
@@ -1095,6 +1119,16 @@ pub(crate) fn detect_ref_targets(
                     // Either a live reference or an external one; preserved as-is.
                     continue;
                 };
+                let path = graph_path(graph, id);
+                // Resolving a RefTarget drops the dangling reference (the side
+                // choice is not meaningful for this kind).
+                if resolutions
+                    .lookup(&ConflictKind::RefTarget, &path, Some(key.as_str()))
+                    .is_some()
+                {
+                    drop_properties.push((id, key));
+                    break;
+                }
                 let target_path = identities
                     .entries
                     .get(&target)
@@ -1102,7 +1136,7 @@ pub(crate) fn detect_ref_targets(
                     .unwrap_or_else(|| format!("{referent}"));
                 conflicts.push(Conflict {
                     kind: ConflictKind::RefTarget,
-                    path: graph_path(graph, id),
+                    path,
                     class: node.class.to_string(),
                     name: node.name.clone(),
                     property: Some(key.to_string()),
@@ -1113,6 +1147,11 @@ pub(crate) fn detect_ref_targets(
                     theirs: None,
                 });
             }
+        }
+    }
+    for (id, key) in drop_properties {
+        if let Some(node) = graph.nodes.get_mut(&id) {
+            node.properties.remove(&key);
         }
     }
 }
@@ -1383,5 +1422,75 @@ fn rewrite_ref(referent: Ref, source: ValueSource, refs: &BuildRefMaps) -> Ref {
         ValueSource::Ours => refs.ours_refs.get(&referent).copied().unwrap_or(referent),
         ValueSource::Theirs => refs.theirs_refs.get(&referent).copied().unwrap_or(referent),
         ValueSource::Merged => referent,
+    }
+}
+
+#[cfg(test)]
+mod unique_id_tests {
+    use super::*;
+    use crate::resolve::{Resolutions, Side};
+    use rbx_types::UniqueId;
+
+    /// A root with two children that share one UniqueId — the collision the
+    /// public API can't produce (WeakDom regenerates colliding ids on decode).
+    fn graph_with_duplicate_uid() -> MergedGraph {
+        let uid = Variant::UniqueId(UniqueId::new(1, 1, 1));
+        let mut nodes = IndexMap::new();
+        nodes.insert(
+            MergeNodeId(0),
+            MergedInstance {
+                class: ustr("DataModel"),
+                name: "DataModel".to_owned(),
+                parent: None,
+                children: vec![MergeNodeId(1), MergeNodeId(2)],
+                properties: BTreeMap::new(),
+                referent: Ref::new(),
+            },
+        );
+        for index in [1usize, 2] {
+            let mut properties = BTreeMap::new();
+            properties.insert(
+                ustr("UniqueId"),
+                MergedProperty {
+                    value: uid.clone(),
+                    source: ValueSource::Base,
+                },
+            );
+            nodes.insert(
+                MergeNodeId(index),
+                MergedInstance {
+                    class: ustr("Folder"),
+                    name: format!("F{index}"),
+                    parent: Some(MergeNodeId(0)),
+                    children: vec![],
+                    properties,
+                    referent: Ref::new(),
+                },
+            );
+        }
+        MergedGraph {
+            root: MergeNodeId(0),
+            nodes,
+        }
+    }
+
+    #[test]
+    fn collision_reported_without_resolution() {
+        let mut graph = graph_with_duplicate_uid();
+        let mut conflicts = Vec::new();
+        detect_unique_id_collisions(&mut graph, &Resolutions::none(), &mut conflicts);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].kind, ConflictKind::UniqueIdCollision);
+    }
+
+    #[test]
+    fn collision_resolved_drops_the_duplicate_id() {
+        let mut graph = graph_with_duplicate_uid();
+        let mut conflicts = Vec::new();
+        detect_unique_id_collisions(&mut graph, &Resolutions::take(Side::Ours), &mut conflicts);
+        assert!(conflicts.is_empty());
+        // The first holder keeps its UniqueId; the duplicate loses it.
+        assert!(graph.nodes[&MergeNodeId(1)].properties.contains_key(&ustr("UniqueId")));
+        assert!(!graph.nodes[&MergeNodeId(2)].properties.contains_key(&ustr("UniqueId")));
     }
 }

@@ -191,8 +191,14 @@ pub fn merge_files(
         &mut conflicts,
     )?;
 
-    detect_unique_id_collisions(&graph, &mut conflicts);
-    detect_ref_targets(&graph, &identities, &doms, &mut conflicts);
+    detect_unique_id_collisions(&mut graph, &settings.resolutions, &mut conflicts);
+    detect_ref_targets(
+        &mut graph,
+        &identities,
+        &doms,
+        &settings.resolutions,
+        &mut conflicts,
+    );
 
     if !conflicts.is_empty() {
         return Ok(MergeReport {
@@ -211,7 +217,7 @@ pub fn merge_files(
         &settings.resolutions,
         &mut conflicts,
     );
-    detect_unique_id_collisions(&graph, &mut conflicts);
+    detect_unique_id_collisions(&mut graph, &settings.resolutions, &mut conflicts);
 
     if !conflicts.is_empty() {
         return Ok(MergeReport {

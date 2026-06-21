@@ -2,14 +2,14 @@ use anyhow::Result;
 use rbx_types::Variant;
 
 use super::common;
-use crate::{ConflictKind, MergeOptions};
+use crate::ConflictKind;
 
 #[test]
 fn internal_ref_survives_merge_round_trip() -> Result<()> {
     let path = common::model_path("ref-child", "xml.rbxmx");
     let base = common::read_fixture(&path)?;
 
-    let result = common::merge_fixture_bytes(&base, &base, &base, &path, MergeOptions::default())?;
+    let result = common::merge_fixture_bytes(&base, &base, &base, &path)?;
     let (merged, _) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
@@ -52,7 +52,7 @@ fn ref_to_deleted_target_conflicts() -> Result<()> {
     })?;
 
     let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (conflicts, _) = common::expect_conflicted(result);
 
     assert!(
@@ -73,7 +73,7 @@ fn ref_nilled_by_deletion_is_reported() -> Result<()> {
     let base = common::read_fixture(&path)?;
     let ours = common::edit_fixture(&path, |dom| common::delete_instance(dom, "Ref Target"))?;
 
-    let result = common::merge_fixture_bytes(&base, &ours, &base, &path, MergeOptions::default())?;
+    let result = common::merge_fixture_bytes(&base, &ours, &base, &path)?;
     let (_, diagnostics) = common::expect_clean(result);
 
     assert!(

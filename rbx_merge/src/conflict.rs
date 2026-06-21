@@ -2,10 +2,9 @@
 
 use crate::diagnostics::Diagnostic;
 
-/// The full outcome of a merge. Unlike [`MergeResult`], a report always carries
-/// diagnostics and conflicts together, and exposes the merged bytes (when the
-/// merge was clean) through the same value — callers don't have to match on an
-/// enum to read diagnostics.
+/// The full outcome of a merge: diagnostics and conflicts together, with the
+/// merged bytes (when the merge was clean) exposed through the same value, so
+/// callers don't have to match on an enum to read diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeReport {
     /// Encoded merged file, present only when the merge was clean.
@@ -19,32 +18,6 @@ impl MergeReport {
     pub fn is_clean(&self) -> bool {
         self.conflicts.is_empty() && self.merged.is_some()
     }
-
-    /// Lower this report into the legacy [`MergeResult`] enum.
-    pub(crate) fn into_merge_result(self) -> MergeResult {
-        match self.merged {
-            Some(merged) if self.conflicts.is_empty() => MergeResult::Clean {
-                merged,
-                diagnostics: self.diagnostics,
-            },
-            _ => MergeResult::Conflicted {
-                conflicts: self.conflicts,
-                diagnostics: self.diagnostics,
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MergeResult {
-    Clean {
-        merged: Vec<u8>,
-        diagnostics: Vec<Diagnostic>,
-    },
-    Conflicted {
-        conflicts: Vec<Conflict>,
-        diagnostics: Vec<Diagnostic>,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

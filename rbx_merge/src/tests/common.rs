@@ -11,7 +11,7 @@ use rbx_dom_weak::{InstanceBuilder, WeakDom, ustr};
 use rbx_types::{Ref, Variant};
 use rbx_xml::{DecodeOptions, DecodePropertyBehavior, EncodeOptions, EncodePropertyBehavior};
 
-use crate::{Conflict, Diagnostic, FileFormat, MergeInput, MergeOptions, MergeResult, merge};
+use crate::{Conflict, Diagnostic, FileFormat, FileInput, MergeReport, MergeSettings, merge_files};
 
 pub fn model_path(name: &str, file_name: &str) -> PathBuf {
     test_files_root().join("models").join(name).join(file_name)
@@ -80,16 +80,12 @@ pub fn merge_fixture_bytes(
     ours: &[u8],
     theirs: &[u8],
     path_hint: &Path,
-    options: MergeOptions,
-) -> Result<MergeResult> {
-    Ok(merge(
-        MergeInput {
-            base,
-            ours,
-            theirs,
-            path_hint: Some(path_hint),
-        },
-        options,
+) -> Result<MergeReport> {
+    Ok(merge_files(
+        FileInput::new(base).with_path_hint(path_hint),
+        FileInput::new(ours).with_path_hint(path_hint),
+        FileInput::new(theirs).with_path_hint(path_hint),
+        MergeSettings::default(),
     )?)
 }
 
@@ -102,26 +98,24 @@ pub fn with_path_redaction<R>(f: impl FnOnce() -> R) -> R {
     settings.bind(f)
 }
 
-pub fn expect_clean(result: MergeResult) -> (Vec<u8>, Vec<Diagnostic>) {
-    match result {
-        MergeResult::Clean {
-            merged,
-            diagnostics,
-        } => (merged, diagnostics),
-        MergeResult::Conflicted { conflicts, .. } => {
-            panic!("expected clean merge, got conflicts: {conflicts:#?}")
-        }
-    }
+pub fn expect_clean(report: MergeReport) -> (Vec<u8>, Vec<Diagnostic>) {
+    assert!(
+        report.conflicts.is_empty(),
+        "expected clean merge, got conflicts: {:#?}",
+        report.conflicts
+    );
+    let merged = report
+        .merged
+        .expect("clean merge should have produced output");
+    (merged, report.diagnostics)
 }
 
-pub fn expect_conflicted(result: MergeResult) -> (Vec<Conflict>, Vec<Diagnostic>) {
-    match result {
-        MergeResult::Conflicted {
-            conflicts,
-            diagnostics,
-        } => (conflicts, diagnostics),
-        MergeResult::Clean { .. } => panic!("expected conflicted merge, got clean output"),
-    }
+pub fn expect_conflicted(report: MergeReport) -> (Vec<Conflict>, Vec<Diagnostic>) {
+    assert!(
+        !report.conflicts.is_empty(),
+        "expected conflicted merge, got clean output"
+    );
+    (report.conflicts, report.diagnostics)
 }
 
 pub fn xml_string(bytes: &[u8]) -> Result<&str> {

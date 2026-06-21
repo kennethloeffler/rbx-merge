@@ -3,7 +3,7 @@ use rbx_dom_weak::{InstanceBuilder, ustr};
 use rbx_types::{UniqueId, Variant};
 
 use super::common;
-use crate::{ConflictKind, MergeOptions};
+use crate::ConflictKind;
 
 /// Build a `Folder` holding several identically-named `StringValue` children,
 /// each distinguished only by its `Value`.
@@ -44,7 +44,7 @@ fn independent_edits_to_same_named_siblings_merge() -> Result<()> {
     let theirs = common::edit_bytes(&base, &path, |dom| set_nth_item_value(dom, 2, "c2"))?;
 
     let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (merged, _) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
@@ -62,7 +62,7 @@ fn same_named_sibling_match_reports_positional_diagnostic() -> Result<()> {
     let base = folder_with_items(&path, &["a", "b"])?;
     let ours = common::edit_bytes(&base, &path, |dom| set_nth_item_value(dom, 0, "a2"))?;
 
-    let result = common::merge_fixture_bytes(&base, &ours, &base, &path, MergeOptions::default())?;
+    let result = common::merge_fixture_bytes(&base, &ours, &base, &path)?;
     let (_, diagnostics) = common::expect_clean(result);
 
     assert!(
@@ -108,7 +108,7 @@ fn unique_id_disambiguates_reordered_siblings() -> Result<()> {
     let theirs = common::edit_bytes(&base, &path, |dom| set_nth_item_value(dom, 0, "a2"))?;
 
     let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (merged, diagnostics) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
@@ -171,7 +171,7 @@ fn rename_without_unique_id_merges_with_concurrent_edit() -> Result<()> {
     })?;
 
     let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (merged, diagnostics) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
@@ -230,7 +230,7 @@ fn rename_with_regenerated_unique_id_is_recovered() -> Result<()> {
     })?;
 
     let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (merged, diagnostics) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
@@ -288,7 +288,7 @@ fn dissimilar_delete_and_add_is_not_a_rename() -> Result<()> {
     })?;
 
     let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (conflicts, diagnostics) = common::expect_conflicted(result);
 
     assert!(

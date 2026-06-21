@@ -18,12 +18,11 @@
 //! - `diagnostics` / `conflict`: the reported diagnostic and conflict/report
 //!   types.
 //!
-//! The primary entry point is [`merge_files`], taking a side-specific
-//! [`FileInput`] per side and returning a [`MergeReport`]. [`merge`] exists as a
-//! convenience wrapper preserving the older byte-slice API. Conflict resolution
-//! is data-driven: a caller supplies a [`Resolutions`] value telling the merge
-//! which side to take, so any frontend — a CLI flag, an edited conflict report,
-//! a Studio plugin — just builds one and hands it to [`merge_files`].
+//! The entry point is [`merge_files`], taking a side-specific [`FileInput`] per
+//! side and returning a [`MergeReport`]. Conflict resolution is data-driven: a
+//! caller supplies a [`Resolutions`] value telling the merge which side to take,
+//! so any frontend — a CLI flag, an edited conflict report, a Studio plugin —
+//! just builds one and hands it to [`merge_files`].
 
 mod conflict;
 mod diagnostics;
@@ -47,60 +46,12 @@ use crate::merge_graph::{
 use crate::render::render_textconv;
 use crate::semantic::{SemanticDom, SemanticInputs};
 
-pub use crate::conflict::{Conflict, ConflictKind, DisplayValue, MergeReport, MergeResult};
+pub use crate::conflict::{Conflict, ConflictKind, DisplayValue, MergeReport};
 pub use crate::diagnostics::{Diagnostic, DiagnosticSeverity};
 pub use crate::format::{FileFormat, detect_format};
 pub use crate::resolve::{Resolutions, Side};
 
 use crate::diagnostics::metadata_diagnostic;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum ConflictPolicy {
-    /// Report conflicts to the caller and emit no merged output. This is
-    /// currently the only supported policy.
-    #[default]
-    Report,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum UnknownPropertyPolicy {
-    /// Preserve properties not present in the reflection database when the
-    /// underlying format round-trips them, reporting them as diagnostics. This
-    /// is currently the only supported policy.
-    #[default]
-    PreserveWhenSupported,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MergeOptions {
-    pub base_format: Option<FileFormat>,
-    pub ours_format: Option<FileFormat>,
-    pub theirs_format: Option<FileFormat>,
-    pub output_format: Option<FileFormat>,
-    pub conflict_policy: ConflictPolicy,
-    pub unknown_property_policy: UnknownPropertyPolicy,
-}
-
-impl Default for MergeOptions {
-    fn default() -> Self {
-        Self {
-            base_format: None,
-            ours_format: None,
-            theirs_format: None,
-            output_format: None,
-            conflict_policy: ConflictPolicy::Report,
-            unknown_property_policy: UnknownPropertyPolicy::PreserveWhenSupported,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct MergeInput<'a> {
-    pub base: &'a [u8],
-    pub ours: &'a [u8],
-    pub theirs: &'a [u8],
-    pub path_hint: Option<&'a Path>,
-}
 
 /// A single side of a merge. Each side carries its own bytes, an optional path
 /// hint used for format detection and diagnostics, and an optional explicit
@@ -139,8 +90,6 @@ impl<'a> FileInput<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct MergeSettings {
     pub output_format: Option<FileFormat>,
-    pub conflict_policy: ConflictPolicy,
-    pub unknown_property_policy: UnknownPropertyPolicy,
     /// How to resolve conflicts the merge cannot settle automatically. Defaults
     /// to reporting every conflict ([`Resolutions::none`]).
     pub resolutions: Resolutions,
@@ -168,8 +117,7 @@ pub fn textconv(bytes: &[u8], path_hint: Option<&Path>) -> Result<String, Error>
 }
 
 /// Three-way merge over side-specific [`FileInput`]s, returning a full
-/// [`MergeReport`]. This is the primary entry point; [`merge`] is a convenience
-/// wrapper over it.
+/// [`MergeReport`]. This is the crate's entry point.
 pub fn merge_files(
     base: FileInput<'_>,
     ours: FileInput<'_>,
@@ -275,34 +223,6 @@ pub fn merge_files(
         conflicts,
         diagnostics,
     })
-}
-
-/// Convenience wrapper preserving the original byte-slice API. Each side shares
-/// `input.path_hint` and takes its format from the matching `options` field.
-pub fn merge(input: MergeInput<'_>, options: MergeOptions) -> Result<MergeResult, Error> {
-    let base = FileInput {
-        bytes: input.base,
-        path_hint: input.path_hint,
-        format: options.base_format,
-    };
-    let ours = FileInput {
-        bytes: input.ours,
-        path_hint: input.path_hint,
-        format: options.ours_format,
-    };
-    let theirs = FileInput {
-        bytes: input.theirs,
-        path_hint: input.path_hint,
-        format: options.theirs_format,
-    };
-    let settings = MergeSettings {
-        output_format: options.output_format,
-        conflict_policy: options.conflict_policy,
-        unknown_property_policy: options.unknown_property_policy,
-        resolutions: Resolutions::none(),
-    };
-
-    Ok(merge_files(base, ours, theirs, settings)?.into_merge_result())
 }
 
 fn choose_output_format(

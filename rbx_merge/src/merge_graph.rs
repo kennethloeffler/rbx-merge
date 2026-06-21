@@ -455,18 +455,8 @@ fn merge_parent(
     resolutions: &Resolutions,
     conflicts: &mut Vec<Conflict>,
 ) -> Option<MergeNodeId> {
-    let base_parent = entry
-        .base
-        .and_then(|id| base.node(id).parent)
-        .and_then(|id| identities.base_to_merge.get(&id).copied());
-    let ours_parent = entry
-        .ours
-        .and_then(|id| ours.node(id).parent)
-        .and_then(|id| identities.ours_to_merge.get(&id).copied());
-    let theirs_parent = entry
-        .theirs
-        .and_then(|id| theirs.node(id).parent)
-        .and_then(|id| identities.theirs_to_merge.get(&id).copied());
+    let (base_parent, ours_parent, theirs_parent) =
+        side_parents(entry, identities, base, ours, theirs);
 
     match merge_optional_scalar(base_parent, ours_parent, theirs_parent) {
         Ok(parent) => parent,
@@ -488,6 +478,123 @@ fn merge_parent(
             base_parent
         }
     }
+}
+
+/// Each side's merged-id parent for a node, or `None` where that side lacks the
+/// node or its parent. Shared by the per-node parent merge and cycle detection.
+fn side_parents(
+    entry: &MergeEntry,
+    identities: &IdentitySet,
+    base: &SemanticDom,
+    ours: &SemanticDom,
+    theirs: &SemanticDom,
+) -> (
+    Option<MergeNodeId>,
+    Option<MergeNodeId>,
+    Option<MergeNodeId>,
+) {
+    let base_parent = entry
+        .base
+        .and_then(|id| base.node(id).parent)
+        .and_then(|id| identities.base_to_merge.get(&id).copied());
+    let ours_parent = entry
+        .ours
+        .and_then(|id| ours.node(id).parent)
+        .and_then(|id| identities.ours_to_merge.get(&id).copied());
+    let theirs_parent = entry
+        .theirs
+        .and_then(|id| theirs.node(id).parent)
+        .and_then(|id| identities.theirs_to_merge.get(&id).copied());
+    (base_parent, ours_parent, theirs_parent)
+}
+
+/// Report (and where possible resolve) instances whose merged parent links form
+/// a cycle.
+///
+/// `merge_parent` resolves each node's parent independently, so two instances
+/// each cleanly reparented under the other yield `A -> B -> A` with no per-node
+/// conflict — yet that component is unreachable from the root and would be
+/// silently dropped from the output (an instance both sides kept, lost without a
+/// word). A cycle admits no valid tree, so it is a genuine conflict.
+///
+/// A resolution breaks it: re-pointing every cycle member's parent to one chosen
+/// side reproduces that side's own (acyclic) tree for them, so the loop is gone.
+/// Members left on a cycle afterwards — no resolution, or a partial one that did
+/// not break the loop — are reported as conflicts.
+pub(crate) fn detect_parent_cycles(
+    graph: &mut MergedGraph,
+    identities: &IdentitySet,
+    base: &SemanticDom,
+    ours: &SemanticDom,
+    theirs: &SemanticDom,
+    resolutions: &Resolutions,
+    conflicts: &mut Vec<Conflict>,
+) {
+    let members: Vec<MergeNodeId> = graph
+        .nodes
+        .keys()
+        .copied()
+        .filter(|&id| node_is_on_parent_cycle(graph, id))
+        .collect();
+
+    // Apply resolutions first. Each member's parent is re-pointed from the
+    // original per-side parents (not the graph's current links), so resolving
+    // every member to the same side yields that side's acyclic structure.
+    for &id in &members {
+        let Some(entry) = identities.entries.get(&id) else {
+            continue;
+        };
+        let (dom, node_id) = conflict_subject(entry, base, ours, theirs);
+        let path = dom.path(node_id);
+        if let Some(side) = resolutions.lookup(&ConflictKind::ParentCycle, &path, None) {
+            let (base_parent, ours_parent, theirs_parent) =
+                side_parents(entry, identities, base, ours, theirs);
+            if let Some(node) = graph.nodes.get_mut(&id) {
+                node.parent = pick(side, base_parent, ours_parent, theirs_parent);
+            }
+        }
+    }
+
+    // Whatever still lies on a cycle is an unresolved conflict.
+    for id in members {
+        if !node_is_on_parent_cycle(graph, id) {
+            continue;
+        }
+        let Some(entry) = identities.entries.get(&id) else {
+            continue;
+        };
+        let (dom, node_id) = conflict_subject(entry, base, ours, theirs);
+        let (base_parent, ours_parent, theirs_parent) =
+            side_parents(entry, identities, base, ours, theirs);
+        conflicts.push(node_conflict(
+            ConflictKind::ParentCycle,
+            dom,
+            node_id,
+            None,
+            base_parent.map(|value| parent_label(value, identities, base, ours, theirs)),
+            ours_parent.map(|value| parent_label(value, identities, base, ours, theirs)),
+            theirs_parent.map(|value| parent_label(value, identities, base, ours, theirs)),
+        ));
+    }
+}
+
+/// Whether `start`'s parent chain loops back to `start` — i.e. `start` itself
+/// lies on a cycle. A node that merely hangs below a cycle (its chain enters a
+/// loop that does not include it) returns `false`; it is reachable again once
+/// the cycle members are resolved, so it is not itself the conflict.
+fn node_is_on_parent_cycle(graph: &MergedGraph, start: MergeNodeId) -> bool {
+    let mut visited = HashSet::new();
+    let mut current = graph.nodes.get(&start).and_then(|node| node.parent);
+    while let Some(id) = current {
+        if id == start {
+            return true;
+        }
+        if id == graph.root || !visited.insert(id) {
+            return false;
+        }
+        current = graph.nodes.get(&id).and_then(|node| node.parent);
+    }
+    false
 }
 
 fn merge_properties(

@@ -179,6 +179,55 @@ fn ref_target_conflict_is_resolvable() -> Result<()> {
 }
 
 #[test]
+fn parent_cycle_take_ours_resolves_and_keeps_both_instances() -> Result<()> {
+    // Two root folders, each carrying a UniqueId so identity tracks them across a
+    // move. ours moves A under B; theirs moves B under A — together an A -> B -> A
+    // cycle. Taking ours re-points both to ours's (acyclic) parents, so the merge
+    // is clean and neither instance is dropped.
+    let path = common::model_path("default-inserted-folder", "xml.rbxmx");
+    let base = common::edit_fixture(&path, |dom| {
+        common::insert_child_at_root(
+            dom,
+            InstanceBuilder::new("Folder").with_name("A").with_property(
+                "UniqueId",
+                Variant::UniqueId(rbx_types::UniqueId::new(1, 1, 1)),
+            ),
+        );
+        common::insert_child_at_root(
+            dom,
+            InstanceBuilder::new("Folder").with_name("B").with_property(
+                "UniqueId",
+                Variant::UniqueId(rbx_types::UniqueId::new(2, 2, 2)),
+            ),
+        );
+        Ok(())
+    })?;
+    let ours = common::edit_bytes(&base, &path, |dom| common::reparent(dom, "A", "B"))?;
+    let theirs = common::edit_bytes(&base, &path, |dom| common::reparent(dom, "B", "A"))?;
+
+    let report = merge_files(
+        FileInput::new(&base).with_path_hint(&path),
+        FileInput::new(&ours).with_path_hint(&path),
+        FileInput::new(&theirs).with_path_hint(&path),
+        MergeSettings {
+            resolutions: Resolutions::take(Side::Ours),
+            ..Default::default()
+        },
+    )?;
+
+    assert!(report.conflicts.is_empty(), "{:#?}", report.conflicts);
+    let merged = report.merged.expect("ParentCycle should be resolvable");
+    let decoded = common::decode_bytes(&merged, &path)?;
+
+    // Both instances survive: nothing was silently dropped by resolving.
+    common::find_by_name(&decoded, "A")?;
+    let b = common::find_by_name(&decoded, "B")?;
+    // ours moved A under B, so that move stands.
+    assert!(common::child_names(&decoded, b).contains(&"A".to_owned()));
+    Ok(())
+}
+
+#[test]
 fn unrelated_override_leaves_conflict_unresolved() -> Result<()> {
     // An override for a different property does not touch this conflict.
     let (base, ours, theirs, path) = conflicting_value_inputs()?;

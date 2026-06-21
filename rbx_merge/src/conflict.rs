@@ -54,6 +54,10 @@ pub enum ConflictKind {
     DeleteModify,
     PropertyValue,
     ParentMove,
+    /// Two or more instances were independently reparented under one another, so
+    /// the merged parent links form a cycle that no tree can satisfy. Neither
+    /// side's tree has the cycle; it emerges only from combining their moves.
+    ParentCycle,
     ChildOrder,
     RefTarget,
 }

@@ -346,6 +346,7 @@ fn kind_name(kind: &ConflictKind) -> &'static str {
         ConflictKind::DeleteModify => "DeleteModify",
         ConflictKind::PropertyValue => "PropertyValue",
         ConflictKind::ParentMove => "ParentMove",
+        ConflictKind::ParentCycle => "ParentCycle",
         ConflictKind::ChildOrder => "ChildOrder",
         ConflictKind::RefTarget => "RefTarget",
     }
@@ -358,6 +359,7 @@ fn parse_kind(value: &str) -> Option<ConflictKind> {
         "DeleteModify" => Some(ConflictKind::DeleteModify),
         "PropertyValue" => Some(ConflictKind::PropertyValue),
         "ParentMove" => Some(ConflictKind::ParentMove),
+        "ParentCycle" => Some(ConflictKind::ParentCycle),
         "ChildOrder" => Some(ConflictKind::ChildOrder),
         "RefTarget" => Some(ConflictKind::RefTarget),
         _ => None,

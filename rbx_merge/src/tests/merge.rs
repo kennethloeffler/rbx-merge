@@ -301,6 +301,44 @@ fn parent_move_divergent_conflicts() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn mutual_reparent_cycle_conflicts() -> Result<()> {
+    let path = common::model_path("default-inserted-folder", "xml.rbxmx");
+    // Two folders at the root, each carrying a `UniqueId` so identity matching
+    // tracks them across a move.
+    let base = common::edit_fixture(&path, |dom| {
+        common::insert_child_at_root(
+            dom,
+            InstanceBuilder::new("Folder")
+                .with_name("A")
+                .with_property("UniqueId", Variant::UniqueId(UniqueId::new(1, 1, 1))),
+        );
+        common::insert_child_at_root(
+            dom,
+            InstanceBuilder::new("Folder")
+                .with_name("B")
+                .with_property("UniqueId", Variant::UniqueId(UniqueId::new(2, 2, 2))),
+        );
+        Ok(())
+    })?;
+    // ours moves A under B; theirs moves B under A. Each move is clean alone, but
+    // together they form an A -> B -> A parent cycle.
+    let ours = common::edit_bytes(&base, &path, |dom| common::reparent(dom, "A", "B"))?;
+    let theirs = common::edit_bytes(&base, &path, |dom| common::reparent(dom, "B", "A"))?;
+
+    let result =
+        common::merge_fixture_bytes(&base, &ours, &theirs, &path, MergeOptions::default())?;
+    let (conflicts, _) = common::expect_conflicted(result);
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|conflict| conflict.kind == ConflictKind::ParentCycle),
+        "expected a ParentCycle conflict rather than silent data loss, got {conflicts:#?}"
+    );
+    Ok(())
+}
+
 /// Adds two sibling folders `P1`/`P2` and a `Leaf` under the existing `Folder`.
 /// `Leaf` carries a `UniqueId` so identity matching tracks it across a move
 /// instead of reading the move as a delete plus an add.

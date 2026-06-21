@@ -3,9 +3,7 @@ use rbx_dom_weak::{InstanceBuilder, ustr};
 use rbx_types::{UniqueId, Variant};
 
 use super::common;
-use crate::{
-    ConflictKind, DiagnosticSeverity, FileInput, MergeSettings, merge_files, textconv,
-};
+use crate::{ConflictKind, DiagnosticSeverity, FileInput, MergeSettings, merge_files, textconv};
 
 #[test]
 fn clean_one_sided_property_edit_snapshots_output() -> Result<()> {
@@ -55,8 +53,7 @@ fn regenerated_unique_id_diverges_three_ways_but_merges_cleanly() -> Result<()> 
         common::set_property(dom, "Value=1337", "UniqueId", Variant::UniqueId(theirs_id))
     })?;
 
-    let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (merged, _) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
@@ -87,8 +84,7 @@ fn conflicting_property_edit_snapshots_conflicts() -> Result<()> {
         common::set_property(dom, "Value=1337", "Value", 2_i64)
     })?;
 
-    let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (conflicts, diagnostics) = common::expect_conflicted(result);
 
     assert!(
@@ -202,8 +198,7 @@ fn delete_versus_modify_conflicts() -> Result<()> {
         common::set_property(dom, "Value=1337", "Value", 42_i64)
     })?;
 
-    let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (conflicts, _) = common::expect_conflicted(result);
 
     assert!(
@@ -231,8 +226,7 @@ fn child_order_independent_additions_merge_cleanly() -> Result<()> {
         Ok(())
     })?;
 
-    let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (merged, _) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
@@ -253,8 +247,7 @@ fn child_order_divergent_reorder_conflicts() -> Result<()> {
     let ours = common::edit_fixture(&path, |dom| common::move_to_end(dom, "Value=1234567"))?;
     let theirs = common::edit_fixture(&path, |dom| common::move_to_end(dom, "Value=1337"))?;
 
-    let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (conflicts, _) = common::expect_conflicted(result);
 
     assert!(
@@ -288,8 +281,7 @@ fn parent_move_divergent_conflicts() -> Result<()> {
     let ours = common::edit_bytes(&base, &path, |dom| common::reparent(dom, "Leaf", "P1"))?;
     let theirs = common::edit_bytes(&base, &path, |dom| common::reparent(dom, "Leaf", "P2"))?;
 
-    let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (conflicts, _) = common::expect_conflicted(result);
 
     assert!(
@@ -326,8 +318,7 @@ fn mutual_reparent_cycle_conflicts() -> Result<()> {
     let ours = common::edit_bytes(&base, &path, |dom| common::reparent(dom, "A", "B"))?;
     let theirs = common::edit_bytes(&base, &path, |dom| common::reparent(dom, "B", "A"))?;
 
-    let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (conflicts, _) = common::expect_conflicted(result);
 
     assert!(
@@ -381,8 +372,7 @@ fn ambiguous_added_match_reports_diagnostic() -> Result<()> {
         Ok(())
     })?;
 
-    let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (_, diagnostics) = common::expect_clean(result);
 
     assert!(

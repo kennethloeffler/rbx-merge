@@ -51,8 +51,7 @@ fn ref_to_deleted_target_conflicts() -> Result<()> {
         common::delete_instance(dom, "OtherTarget")
     })?;
 
-    let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (conflicts, _) = common::expect_conflicted(result);
 
     assert!(

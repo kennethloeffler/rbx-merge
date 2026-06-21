@@ -43,8 +43,7 @@ fn independent_edits_to_same_named_siblings_merge() -> Result<()> {
     let ours = common::edit_bytes(&base, &path, |dom| set_nth_item_value(dom, 0, "a2"))?;
     let theirs = common::edit_bytes(&base, &path, |dom| set_nth_item_value(dom, 2, "c2"))?;
 
-    let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (merged, _) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
@@ -107,8 +106,7 @@ fn unique_id_disambiguates_reordered_siblings() -> Result<()> {
     })?;
     let theirs = common::edit_bytes(&base, &path, |dom| set_nth_item_value(dom, 0, "a2"))?;
 
-    let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (merged, diagnostics) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
@@ -170,8 +168,7 @@ fn rename_without_unique_id_merges_with_concurrent_edit() -> Result<()> {
         common::set_property(dom, "Counter", "Value", 5_i64)
     })?;
 
-    let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (merged, diagnostics) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
@@ -229,8 +226,7 @@ fn rename_with_regenerated_unique_id_is_recovered() -> Result<()> {
         common::set_property(dom, "Counter", "Value", 5_i64)
     })?;
 
-    let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (merged, diagnostics) = common::expect_clean(result);
     let decoded = common::decode_bytes(&merged, &path)?;
 
@@ -287,8 +283,7 @@ fn dissimilar_delete_and_add_is_not_a_rename() -> Result<()> {
         common::set_property(dom, "Old", "Value", 7_i64)
     })?;
 
-    let result =
-        common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
     let (conflicts, diagnostics) = common::expect_conflicted(result);
 
     assert!(

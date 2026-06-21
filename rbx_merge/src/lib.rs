@@ -237,7 +237,7 @@ pub fn merge_files(
         severity: DiagnosticSeverity::Info,
         code: "output_format".to_owned(),
         message: format!("merged output encoded as {output_format}"),
-        path: ours.path_hint.map(|path| path.display().to_string()),
+        path: ours.path_hint.map(|path| path.display().to_string().into()),
     });
 
     Ok(MergeReport {

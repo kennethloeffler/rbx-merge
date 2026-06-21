@@ -1,5 +1,7 @@
 //! Diagnostics emitted alongside merge and textconv results.
 
+use std::sync::Arc;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiagnosticSeverity {
     Info,
@@ -11,7 +13,10 @@ pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
     pub code: String,
     pub message: String,
-    pub path: Option<String>,
+    /// `Arc<str>` rather than `String` so a single node's path can be shared
+    /// across the several diagnostics it may produce (e.g. one per unknown
+    /// property) without re-allocating it for each.
+    pub path: Option<Arc<str>>,
 }
 
 pub(crate) fn metadata_diagnostic() -> Diagnostic {
@@ -26,7 +31,11 @@ pub(crate) fn metadata_diagnostic() -> Diagnostic {
 /// A property on the merged output that the reflection database does not know
 /// about. It is preserved as-is, but flagged so callers can audit lossy or
 /// format-specific round-tripping at a concrete location.
-pub(crate) fn unknown_property_diagnostic(path: String, class: &str, property: &str) -> Diagnostic {
+pub(crate) fn unknown_property_diagnostic(
+    path: Arc<str>,
+    class: &str,
+    property: &str,
+) -> Diagnostic {
     Diagnostic {
         severity: DiagnosticSeverity::Info,
         code: "unknown_property".to_owned(),
@@ -52,7 +61,7 @@ pub(crate) fn dropped_reference_diagnostic(
         message: format!(
             "reference {property:?} was dropped to nil because its target {target} was deleted in the merge"
         ),
-        path: Some(path),
+        path: Some(path.into()),
     }
 }
 
@@ -71,7 +80,7 @@ pub(crate) fn renamed_instance_diagnostic(
         message: format!(
             "matched {class} {from:?} to {to:?} as a rename (no UniqueId); identity is heuristic"
         ),
-        path: Some(path),
+        path: Some(path.into()),
     }
 }
 
@@ -91,7 +100,7 @@ pub(crate) fn positional_identity_diagnostic(
         message: format!(
             "{count} same-named {name:?} ({class}) children without UniqueId were matched by position; identity may be wrong if siblings were reordered"
         ),
-        path: Some(path),
+        path: Some(path.into()),
     }
 }
 
@@ -106,6 +115,6 @@ pub(crate) fn ambiguous_identity_diagnostic(path: String) -> Diagnostic {
         message:
             "added instance matched multiple candidates across sides; treated as a distinct addition"
                 .to_owned(),
-        path: Some(path),
+        path: Some(path.into()),
     }
 }

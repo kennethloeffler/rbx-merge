@@ -3,6 +3,7 @@
 //! `WeakDom` for encoding.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 use rbx_dom_weak::{InstanceBuilder, WeakDom};
@@ -1114,8 +1115,19 @@ fn graph_path(graph: &MergedGraph, id: MergeNodeId) -> String {
     }
     let mut parts = Vec::new();
     let mut current = Some(id);
+    let mut visited = HashSet::new();
     while let Some(node_id) = current {
         if node_id == graph.root {
+            break;
+        }
+        if !visited.insert(node_id) {
+            // The parent chain cycles. The merge can produce one when two
+            // instances are independently reparented under each other: neither
+            // side's tree has a cycle, but the merged parents do. Such a
+            // component is unreachable from the root and so never built into the
+            // output, but it still lives in `graph.nodes` and is walked here.
+            // Stop rather than loop forever (which would grow `parts` without
+            // bound).
             break;
         }
         let Some(node) = graph.nodes.get(&node_id) else {
@@ -1327,12 +1339,19 @@ pub(crate) fn scan_unknown_properties(graph: &MergedGraph, diagnostics: &mut Vec
         return;
     };
     for (&id, node) in &graph.nodes {
+        // Reconstruct the node's path at most once, and only if it actually has
+        // an unknown property. Rebuilding it per property walks the ancestry and
+        // clones a string for every level each time; a node with many unknown
+        // properties (or many nodes that do) turns that into a large amount of
+        // redundant allocation.
+        let mut path: Option<Arc<str>> = None;
         for &key in node.properties.keys() {
             if is_known_property(database, node.class.as_str(), key.as_str()) {
                 continue;
             }
+            let path = path.get_or_insert_with(|| Arc::from(graph_path(graph, id)));
             diagnostics.push(unknown_property_diagnostic(
-                graph_path(graph, id),
+                Arc::clone(path),
                 node.class.as_str(),
                 key.as_str(),
             ));
@@ -1370,7 +1389,8 @@ pub(crate) fn build_weak_dom(
     doms: &SemanticInputs<'_>,
 ) -> Result<WeakDom, Error> {
     let refs = BuildRefMaps::new(graph, identities, doms);
-    let root_builder = build_instance_builder(graph, &refs, graph.root)?;
+    let mut built = HashSet::new();
+    let root_builder = build_instance_builder(graph, &refs, graph.root, &mut built)?;
     Ok(WeakDom::new(root_builder))
 }
 
@@ -1412,7 +1432,19 @@ fn build_instance_builder(
     graph: &MergedGraph,
     refs: &BuildRefMaps,
     id: MergeNodeId,
+    built: &mut HashSet<MergeNodeId>,
 ) -> Result<InstanceBuilder, Error> {
+    // The graph is a tree: each node is reachable from the root by exactly one
+    // path. A node appears in exactly one parent's `children` because every such
+    // sequence is filtered to that parent (see `child_merge_ids`), so building
+    // it twice would mean an upstream invariant broke. Fail loudly instead of
+    // duplicating a subtree (which compounds into exponential output for nested
+    // duplicates).
+    if !built.insert(id) {
+        return Err(Error::Internal(format!(
+            "merged node {id:?} reached from two parents"
+        )));
+    }
     let node = graph
         .nodes
         .get(&id)
@@ -1426,7 +1458,7 @@ fn build_instance_builder(
     }
     for &child in &node.children {
         if graph.nodes.contains_key(&child) {
-            builder.add_child(build_instance_builder(graph, refs, child)?);
+            builder.add_child(build_instance_builder(graph, refs, child, built)?);
         }
     }
     Ok(builder)

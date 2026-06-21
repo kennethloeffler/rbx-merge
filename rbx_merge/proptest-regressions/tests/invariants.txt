@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f098bc3b717d17774c1aa3a87bd67c09d42752690c399c63b13e3d2a1aefcbdb # shrinks to file_name = "binary.rbxm", ours_edits = [Reparent(16858969491059862094, 1427953276029065207)], theirs_edits = [Reparent(238453349373515186, 11601711944709254758)]

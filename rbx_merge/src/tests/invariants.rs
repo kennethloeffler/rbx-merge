@@ -2,14 +2,15 @@
 //! and `theirs` from a common base by applying randomized edit sequences, then
 //! asserts merge invariants that must hold regardless of the edits.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use proptest::prelude::*;
 use rbx_dom_weak::{InstanceBuilder, WeakDom, ustr};
-use rbx_types::{Attributes, CFrame, Color3, Matrix3, UniqueId, Variant, Vector3};
+use rbx_types::{Attributes, CFrame, Color3, Matrix3, Ref, UniqueId, Variant, Vector3};
 
 use super::common;
-use crate::{FileInput, MergeSettings, merge_files, textconv};
+use crate::{FileInput, MergeSettings, Resolutions, Side, merge_files, textconv};
 
 /// A single randomized edit. Instances are addressed by index into the current
 /// descendant list (taken modulo its length), so an edit always targets some
@@ -47,6 +48,10 @@ enum Edit {
     /// instance still matches by structure, so this exercises the authoritative
     /// UniqueId matching path and Lever 1's resolution of a divergent UniqueId.
     Regenerate(usize),
+    /// Point a synthetic `Ref` property at another instance (chosen by index),
+    /// exercising the merge's reference rewriting. When the target is later
+    /// deleted on a side, the reference dangles — the dropped-reference path.
+    SetRef(usize, usize),
 }
 
 /// The Variant type written under a given synthetic property name.
@@ -119,7 +124,20 @@ fn edit_strategy() -> impl Strategy<Value = Edit> {
         any::<usize>().prop_map(Edit::MoveToEnd),
         (any::<usize>(), any::<usize>()).prop_map(|(i, p)| Edit::Reparent(i, p)),
         any::<usize>().prop_map(Edit::Regenerate),
+        (any::<usize>(), any::<usize>()).prop_map(|(i, t)| Edit::SetRef(i, t)),
     ]
+}
+
+/// Edit sequences excluding `Regenerate`, for invariants that track instances by
+/// `UniqueId`: regenerating an id would make a surviving instance look like a
+/// deletion followed by an unrelated addition to that tracking.
+fn non_regenerating_edits() -> impl Strategy<Value = Vec<Edit>> {
+    prop::collection::vec(
+        edit_strategy().prop_filter("excludes Regenerate", |edit| {
+            !matches!(edit, Edit::Regenerate(_))
+        }),
+        0..6,
+    )
 }
 
 /// Name space for derived instances: effectively unbounded names keep every
@@ -247,6 +265,14 @@ fn apply_edit(dom: &mut WeakDom, edit: &Edit, counter: &mut u32, name_space: u32
                     .insert(ustr("UniqueId"), Variant::UniqueId(id));
             }
         }
+        Edit::SetRef(index, target_index) => {
+            let target = pick(target_index);
+            if let Some(instance) = dom.get_by_ref_mut(pick(index)) {
+                instance
+                    .properties
+                    .insert(ustr("RefProbe"), Variant::Ref(target));
+            }
+        }
     }
 }
 
@@ -334,6 +360,28 @@ fn merged_bytes(base: &[u8], ours: &[u8], theirs: &[u8], path: &Path) -> Option<
     .merged
 }
 
+/// Merge the three sides under an explicit resolution policy, returning the
+/// merged bytes or `None` on conflict.
+fn merged_bytes_resolved(
+    base: &[u8],
+    ours: &[u8],
+    theirs: &[u8],
+    path: &Path,
+    resolutions: Resolutions,
+) -> Option<Vec<u8>> {
+    merge_files(
+        FileInput::new(base).with_path_hint(path),
+        FileInput::new(ours).with_path_hint(path),
+        FileInput::new(theirs).with_path_hint(path),
+        MergeSettings {
+            resolutions,
+            ..MergeSettings::default()
+        },
+    )
+    .expect("merge should not error")
+    .merged
+}
+
 /// Merge the three sides and return the merged output's semantic text, or
 /// `None` if the merge reported conflicts.
 fn merged_text(base: &[u8], ours: &[u8], theirs: &[u8], path: &Path) -> Option<String> {
@@ -389,6 +437,25 @@ fn set_attribute_on(base: &[u8], path: &Path, targets: &[usize], key: &str) -> V
         }
     }
     common::encode_fixture(&dom, path).expect("encode side")
+}
+
+/// The set of non-nil `UniqueId`s carried by the non-root instances of a file.
+/// This is the merge's authoritative identity, so it is the right key for
+/// tracking which instances survived a merge. Instances without a `UniqueId`
+/// (e.g. freshly added ones, which serialize as nil) are excluded — they have no
+/// stable identity to follow across sides.
+fn nonroot_unique_ids(bytes: &[u8], path: &Path) -> HashSet<UniqueId> {
+    let dom = common::decode_bytes(bytes, path).expect("decode file");
+    let root = dom.root_ref();
+    dom.descendants()
+        .filter(|instance| instance.referent() != root)
+        .filter_map(
+            |instance| match instance.properties.get(&ustr("UniqueId")) {
+                Some(Variant::UniqueId(id)) if !id.is_nil() => Some(*id),
+                _ => None,
+            },
+        )
+        .collect()
 }
 
 /// Number of instances whose `Attributes` map contains `key`.
@@ -528,7 +595,7 @@ proptest! {
             targets
                 .iter()
                 .map(|target| target % count)
-                .collect::<std::collections::HashSet<_>>()
+                .collect::<HashSet<_>>()
                 .len()
         };
         prop_assert_eq!(instances_with_attribute(&decoded, "ours"), distinct(&ours_targets));
@@ -580,6 +647,146 @@ proptest! {
 
             // Stability: the merged output is a normalized fixpoint.
             prop_assert_eq!(&text, &normalized(&merged, &path));
+        }
+    }
+
+    /// A clean merge never silently drops an instance both sides kept. Every
+    /// instance present in the base whose `UniqueId` still appears on *both*
+    /// sides (so neither side deleted it) must appear in a clean merged output.
+    /// A clean merge is the engine's promise that it reconciled the two sides
+    /// without loss; an instance vanishing from one is data loss masquerading as
+    /// success. `Regenerate` is excluded because it rewrites a `UniqueId`, which
+    /// would make a surviving instance look deleted to this id-based tracking.
+    #[test]
+    fn clean_merge_preserves_instances_kept_by_both_sides(
+        file_name in format_strategy(),
+        ours_edits in non_regenerating_edits(),
+        theirs_edits in non_regenerating_edits(),
+    ) {
+        let path = common::model_path("three-intvalues", file_name);
+        let base = seed_base(&common::read_fixture(&path).expect("read base"), &path);
+        let ours = derive(&base, &path, &ours_edits, UNIQUE_NAMES, 1);
+        let theirs = derive(&base, &path, &theirs_edits, UNIQUE_NAMES, 2);
+
+        if let Some(merged) = merged_bytes(&base, &ours, &theirs, &path) {
+            let base_ids = nonroot_unique_ids(&base, &path);
+            let ours_ids = nonroot_unique_ids(&ours, &path);
+            let theirs_ids = nonroot_unique_ids(&theirs, &path);
+            let merged_ids = nonroot_unique_ids(&merged, &path);
+
+            for id in &base_ids {
+                if ours_ids.contains(id) && theirs_ids.contains(id) {
+                    prop_assert!(
+                        merged_ids.contains(id),
+                        "instance {id:?} was kept by both sides but is missing from the clean merge"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A clean merge produces a structurally valid file: no two instances share a
+    /// non-nil `UniqueId`. Identity is keyed on `UniqueId`, so a duplicate in the
+    /// output is a corrupt result that would mis-match on the next merge. This
+    /// pins `detect_unique_id_collisions` and runs the full edit space (including
+    /// `Regenerate`, the most likely source of a collision).
+    #[test]
+    fn clean_merge_output_has_no_duplicate_unique_ids(
+        file_name in format_strategy(),
+        ours_edits in prop::collection::vec(edit_strategy(), 0..6),
+        theirs_edits in prop::collection::vec(edit_strategy(), 0..6),
+    ) {
+        let path = common::model_path("three-intvalues", file_name);
+        let base = seed_base(&common::read_fixture(&path).expect("read base"), &path);
+        let ours = derive(&base, &path, &ours_edits, UNIQUE_NAMES, 1);
+        let theirs = derive(&base, &path, &theirs_edits, UNIQUE_NAMES, 2);
+
+        if let Some(merged) = merged_bytes(&base, &ours, &theirs, &path) {
+            let dom = common::decode_bytes(&merged, &path).expect("decode merged");
+            let root = dom.root_ref();
+            let mut seen = HashSet::new();
+            for instance in dom.descendants() {
+                if instance.referent() == root {
+                    continue;
+                }
+                if let Some(Variant::UniqueId(id)) = instance.properties.get(&ustr("UniqueId"))
+                    && !id.is_nil()
+                {
+                    prop_assert!(
+                        seen.insert(*id),
+                        "duplicate UniqueId {id:?} in clean merged output"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A bulk take-ours merge is always clean. The default report-everything
+    /// merge conflicts on roughly a fifth of random edit pairs; taking ours for
+    /// every conflict must always produce output, so no conflict kind — including
+    /// `ParentCycle` — is a dead end a caller cannot resolve past. (Already-clean
+    /// inputs stay clean, since the resolution only fires on conflicts.) This
+    /// exercises the resolution path across the full conflict space, which was
+    /// only unit-tested before.
+    #[test]
+    fn take_ours_merge_is_always_clean(
+        file_name in format_strategy(),
+        ours_edits in prop::collection::vec(edit_strategy(), 0..6),
+        theirs_edits in prop::collection::vec(edit_strategy(), 0..6),
+    ) {
+        let path = common::model_path("three-intvalues", file_name);
+        let base = seed_base(&common::read_fixture(&path).expect("read base"), &path);
+        let ours = derive(&base, &path, &ours_edits, UNIQUE_NAMES, 1);
+        let theirs = derive(&base, &path, &theirs_edits, UNIQUE_NAMES, 2);
+
+        let resolved = merged_bytes_resolved(
+            &base,
+            &ours,
+            &theirs,
+            &path,
+            Resolutions::take(Side::Ours),
+        );
+        prop_assert!(
+            resolved.is_some(),
+            "take-ours should resolve every conflict into a clean merge"
+        );
+    }
+
+    /// A clean merge never emits a dangling reference. Every `Ref` property in
+    /// the output is nil or points to an instance that exists in the output. A
+    /// reference to a deleted target instead becomes a `RefTarget` conflict (so
+    /// the merge is not clean) or a nilled-and-reported drop — it never reaches a
+    /// clean output as a `Ref` to a vanished instance, which would be a corrupt
+    /// file. Exercises the ref-rewriting and ref-target paths across random
+    /// reference edits and deletions.
+    #[test]
+    fn clean_merge_has_no_dangling_references(
+        file_name in format_strategy(),
+        ours_edits in prop::collection::vec(edit_strategy(), 0..6),
+        theirs_edits in prop::collection::vec(edit_strategy(), 0..6),
+    ) {
+        let path = common::model_path("three-intvalues", file_name);
+        let base = seed_base(&common::read_fixture(&path).expect("read base"), &path);
+        let ours = derive(&base, &path, &ours_edits, UNIQUE_NAMES, 1);
+        let theirs = derive(&base, &path, &theirs_edits, UNIQUE_NAMES, 2);
+
+        if let Some(merged) = merged_bytes(&base, &ours, &theirs, &path) {
+            let dom = common::decode_bytes(&merged, &path).expect("decode merged");
+            let present: HashSet<Ref> = std::iter::once(dom.root_ref())
+                .chain(dom.descendants().map(|instance| instance.referent()))
+                .collect();
+
+            for instance in dom.descendants() {
+                for value in instance.properties.values() {
+                    if let Variant::Ref(referent) = value {
+                        prop_assert!(
+                            referent.is_none() || present.contains(referent),
+                            "instance {:?} has a dangling Ref {referent:?} in a clean merge",
+                            instance.name
+                        );
+                    }
+                }
+            }
         }
     }
 }

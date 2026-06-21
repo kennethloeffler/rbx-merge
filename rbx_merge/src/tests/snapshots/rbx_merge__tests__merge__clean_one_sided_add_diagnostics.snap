@@ -6,7 +6,7 @@ expression: diagnostics
     Diagnostic {
         severity: Warning,
         code: "weak_dom_metadata",
-        message: "WeakDom does not model every Roblox file-level metadata field; this prototype is semantic, not byte-perfect.",
+        message: "WeakDom does not model every Roblox file-level metadata field; the merge is semantic, not byte-perfect.",
         path: None,
     },
     Diagnostic {

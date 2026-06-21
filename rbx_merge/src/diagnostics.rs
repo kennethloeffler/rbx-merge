@@ -30,7 +30,7 @@ pub(crate) fn metadata_diagnostic() -> Diagnostic {
     Diagnostic {
         severity: DiagnosticSeverity::Warning,
         code: "weak_dom_metadata".to_owned(),
-        message: "WeakDom does not model every Roblox file-level metadata field; this prototype is semantic, not byte-perfect.".to_owned(),
+        message: "WeakDom does not model every Roblox file-level metadata field; the merge is semantic, not byte-perfect.".to_owned(),
         path: None,
     }
 }

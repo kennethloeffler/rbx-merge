@@ -37,8 +37,6 @@ pub(crate) struct SemanticDom {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SemanticInstance {
-    #[allow(dead_code)]
-    pub(crate) id: NodeId,
     pub(crate) source_ref: Ref,
     pub(crate) class: Ustr,
     pub(crate) name: String,
@@ -75,7 +73,6 @@ impl SemanticDom {
         self.nodes.insert(
             id,
             SemanticInstance {
-                id,
                 source_ref: instance.referent(),
                 class: instance.class,
                 name: instance.name.clone(),

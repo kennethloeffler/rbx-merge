@@ -30,7 +30,7 @@ impl From<TakeSide> for Side {
 
 #[derive(Debug, Parser)]
 #[command(name = "rbx-merge")]
-#[command(about = "Semantic diff and three-way merge prototype for Roblox files")]
+#[command(about = "Semantic diff and three-way merge for Roblox files")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

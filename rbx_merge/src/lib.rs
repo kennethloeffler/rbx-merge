@@ -1,8 +1,29 @@
 //! VCS-neutral semantic three-way merge backend for Roblox model and place
-//! files. The pipeline is: decode bytes into a [`semantic`] model, match
-//! instance identities across the three sides ([`identity`]), merge the matched
-//! graph ([`merge_graph`]), and re-encode ([`format`]). Conflicts and
-//! [`diagnostics`] are reported to the caller rather than written inline.
+//! files. The pipeline is: decode bytes into a `semantic` model, match instance
+//! identities across the three sides (`identity`), merge the matched graph
+//! (`merge_graph`), and re-encode (`format`). Conflicts and `diagnostics` are
+//! reported to the caller rather than written inline.
+//!
+//! Internally the crate is split into focused modules:
+//!
+//! - `format`: file-format detection and binary/XML decode/encode.
+//! - `semantic`: the format-independent instance model and value-equality
+//!   logic.
+//! - `identity`: cross-side instance matching (which base/ours/theirs nodes are
+//!   "the same").
+//! - `merge_graph`: the three-way merge, child-order resolution,
+//!   reference-target and unique-id checks, and lowering back to a `WeakDom`.
+//! - `render`: per-value display strings and the deterministic [`textconv`]
+//!   tree.
+//! - `diagnostics` / `conflict`: the reported diagnostic and conflict/report
+//!   types.
+//!
+//! The primary entry point is [`merge_files`], taking a side-specific
+//! [`FileInput`] per side and returning a [`MergeReport`]. [`merge`] exists as a
+//! convenience wrapper preserving the older byte-slice API. Conflict resolution
+//! is data-driven: a caller supplies a [`Resolutions`] value telling the merge
+//! which side to take, so any frontend — a CLI flag, an edited conflict report,
+//! a Studio plugin — just builds one and hands it to [`merge_files`].
 
 mod conflict;
 mod diagnostics;

@@ -1,4 +1,11 @@
 //! Diagnostics emitted alongside merge and textconv results.
+//!
+//! Diagnostics call out concrete locations without failing the merge: unknown
+//! (non-reflected) properties preserved in the output, and ambiguous identity
+//! matches that were declined to keep merging deterministic. References whose
+//! target was deleted in the merge are, by contrast, reported as
+//! [`RefTarget`](crate::ConflictKind::RefTarget) conflicts rather than silently
+//! dropped.
 
 use std::sync::Arc;
 

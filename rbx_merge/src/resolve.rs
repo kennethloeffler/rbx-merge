@@ -2,9 +2,13 @@
 //! take when it cannot decide automatically.
 //!
 //! A [`Resolutions`] carries an optional bulk default (take this side for every
-//! conflict) plus per-conflict overrides keyed by conflict kind, instance path,
-//! and property. Any frontend — a CLI flag, an edited conflict report, a Studio
-//! plugin — ultimately just builds one of these and hands it to the merge.
+//! conflict, e.g. [`Resolutions::take`]) plus per-conflict overrides keyed by
+//! conflict kind, instance path, and property ([`Resolutions::resolve`]). Any
+//! frontend — a CLI flag, an edited conflict report, a Studio plugin —
+//! ultimately just builds one of these and hands it to the merge.
+//!
+//! Resolution is wired through the property-value, instance-identity,
+//! parent-move, child-order, and delete/modify conflicts.
 
 use std::collections::HashMap;
 

@@ -17,6 +17,41 @@ pub fn model_path(name: &str, file_name: &str) -> PathBuf {
     test_files_root().join("models").join(name).join(file_name)
 }
 
+/// Resolve a fixture by its path relative to the rbx-test-files root, e.g.
+/// `"places/all-instances-415/binary.rbxl"`. Used by the invariants suite to
+/// name the specific fixtures it runs each property against.
+pub fn fixture_path(rel_path: &str) -> PathBuf {
+    test_files_root().join(rel_path)
+}
+
+/// Every decodeable fixture in rbx-test-files — model, place, and edge-case
+/// files across both codecs — sorted for a stable index. Used by the
+/// property-based invariants to exercise the merge against a broad spread of
+/// real instance trees rather than a single hand-picked fixture.
+pub fn all_fixture_paths() -> Vec<PathBuf> {
+    let root = test_files_root();
+    let mut paths = Vec::new();
+    for category in ["models", "places", "edge-cases"] {
+        collect_fixtures(&root.join(category), &mut paths);
+    }
+    paths.sort();
+    paths
+}
+
+fn collect_fixtures(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_fixtures(&path, out);
+        } else if FileFormat::from_extension(&path).is_some() {
+            out.push(path);
+        }
+    }
+}
+
 pub fn read_fixture(path: &Path) -> Result<Vec<u8>> {
     fs::read(path).with_context(|| format!("failed to read fixture {}", path.display()))
 }

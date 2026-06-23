@@ -172,11 +172,12 @@ fn materialize_from_side(
     used_refs: &mut HashSet<Ref>,
 ) -> MergedInstance {
     let source = side_source(side);
-    let (dom, node_id) = match side {
-        Side::Base => (doms.base, entry.base),
-        Side::Ours => (doms.ours, entry.ours),
-        Side::Theirs => (doms.theirs, entry.theirs),
-    };
+    let (dom, node_id) = pick(
+        side,
+        (doms.base, entry.base),
+        (doms.ours, entry.ours),
+        (doms.theirs, entry.theirs),
+    );
     let node = dom.node(node_id.expect("resolved side has a node"));
     let parent = node
         .parent
@@ -282,12 +283,7 @@ fn resolve_delete_modify(
 ) -> NodeDecision {
     let path = base.path(base_id);
     if let Some(side) = resolutions.lookup(&ConflictKind::DeleteModify, &path, None) {
-        let present = match side {
-            Side::Base => entry.base,
-            Side::Ours => entry.ours,
-            Side::Theirs => entry.theirs,
-        };
-        return match present {
+        return match pick(side, entry.base, entry.ours, entry.theirs) {
             Some(_) => NodeDecision::TakeSide(side),
             None => NodeDecision::Drop,
         };

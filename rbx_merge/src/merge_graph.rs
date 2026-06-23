@@ -281,14 +281,7 @@ fn resolve_delete_modify(
     resolutions: &Resolutions,
     conflicts: &mut Vec<Conflict>,
 ) -> NodeDecision {
-    let path = base.path(base_id);
-    if let Some(side) = resolutions.lookup(&ConflictKind::DeleteModify, &path, None) {
-        return match pick(side, entry.base, entry.ours, entry.theirs) {
-            Some(_) => NodeDecision::TakeSide(side),
-            None => NodeDecision::Drop,
-        };
-    }
-    conflicts.push(node_conflict(
+    match resolve_or_report(
         ConflictKind::DeleteModify,
         base,
         base_id,
@@ -296,8 +289,15 @@ fn resolve_delete_modify(
         Some("present in base"),
         Some(ours_label),
         Some(theirs_label),
-    ));
-    NodeDecision::Drop
+        resolutions,
+        conflicts,
+    ) {
+        Some(side) => match pick(side, entry.base, entry.ours, entry.theirs) {
+            Some(_) => NodeDecision::TakeSide(side),
+            None => NodeDecision::Drop,
+        },
+        None => NodeDecision::Drop,
+    }
 }
 
 fn side_node_changed_from_base(
@@ -456,11 +456,7 @@ fn merge_parent(
         Ok(parent) => parent,
         Err(()) => {
             let (dom, id) = conflict_subject(entry, base, ours, theirs);
-            let path = dom.path(id);
-            if let Some(side) = resolutions.lookup(&ConflictKind::ParentMove, &path, None) {
-                return pick(side, base_parent, ours_parent, theirs_parent);
-            }
-            conflicts.push(node_conflict(
+            match resolve_or_report(
                 ConflictKind::ParentMove,
                 dom,
                 id,
@@ -468,8 +464,12 @@ fn merge_parent(
                 base_parent.map(|value| parent_label(value, identities, base, ours, theirs)),
                 ours_parent.map(|value| parent_label(value, identities, base, ours, theirs)),
                 theirs_parent.map(|value| parent_label(value, identities, base, ours, theirs)),
-            ));
-            base_parent
+                resolutions,
+                conflicts,
+            ) {
+                Some(side) => pick(side, base_parent, ours_parent, theirs_parent),
+                None => base_parent,
+            }
         }
     }
 }
@@ -636,10 +636,17 @@ fn merge_properties(
             PropertyMerge::Delete => {}
             PropertyMerge::Conflict => {
                 let (dom, id) = conflict_subject(entry, doms.base, doms.ours, doms.theirs);
-                let path = dom.path(id);
-                if let Some(side) =
-                    resolutions.lookup(&ConflictKind::PropertyValue, &path, Some(key.as_str()))
-                {
+                if let Some(side) = resolve_or_report(
+                    ConflictKind::PropertyValue,
+                    dom,
+                    id,
+                    Some(key.as_str()),
+                    base_value.map(|value| display_variant(value, ValueSource::Base, doms)),
+                    ours_value.map(|value| display_variant(value, ValueSource::Ours, doms)),
+                    theirs_value.map(|value| display_variant(value, ValueSource::Theirs, doms)),
+                    resolutions,
+                    conflicts,
+                ) {
                     // The chosen side may not have the property, in which case
                     // resolving to that side means dropping it.
                     if let Some(value) = pick(side, base_value, ours_value, theirs_value) {
@@ -651,17 +658,7 @@ fn merge_properties(
                             },
                         );
                     }
-                    continue;
                 }
-                conflicts.push(node_conflict(
-                    ConflictKind::PropertyValue,
-                    dom,
-                    id,
-                    Some(key.as_str()),
-                    base_value.map(|value| display_variant(value, ValueSource::Base, doms)),
-                    ours_value.map(|value| display_variant(value, ValueSource::Ours, doms)),
-                    theirs_value.map(|value| display_variant(value, ValueSource::Theirs, doms)),
-                ));
             }
         }
     }
@@ -933,6 +930,30 @@ fn node_conflict(
     }
 }
 
+/// Resolve a conflict from the supplied `Resolutions`, or record it. Returns the
+/// chosen `Side` when a resolution applies, leaving the caller to act on it (the
+/// per-kind fallback and how a chosen side maps to a value differ by site);
+/// otherwise pushes a `node_conflict` built from the given per-side display
+/// values and returns `None`.
+#[allow(clippy::too_many_arguments)]
+fn resolve_or_report(
+    kind: ConflictKind,
+    dom: &SemanticDom,
+    id: NodeId,
+    property: Option<&str>,
+    base: Option<impl Into<String>>,
+    ours: Option<impl Into<String>>,
+    theirs: Option<impl Into<String>>,
+    resolutions: &Resolutions,
+    conflicts: &mut Vec<Conflict>,
+) -> Option<Side> {
+    if let Some(side) = resolutions.lookup(&kind, &dom.path(id), property) {
+        return Some(side);
+    }
+    conflicts.push(node_conflict(kind, dom, id, property, base, ours, theirs));
+    None
+}
+
 fn choose_referent(entry: &MergeEntry, doms: &SemanticInputs<'_>, used: &mut HashSet<Ref>) -> Ref {
     let preferred = entry
         .ours
@@ -983,21 +1004,19 @@ pub(crate) fn assign_child_order(
             ChildOrderMerge::Clean(children) => children,
             ChildOrderMerge::Conflict => {
                 let (dom, node_id) = conflict_subject(entry, base, ours, theirs);
-                let path = dom.path(node_id);
-                match resolutions.lookup(&ConflictKind::ChildOrder, &path, None) {
+                match resolve_or_report(
+                    ConflictKind::ChildOrder,
+                    dom,
+                    node_id,
+                    None,
+                    Some(child_order_label(&base_seq, graph)),
+                    Some(child_order_label(&ours_seq, graph)),
+                    Some(child_order_label(&theirs_seq, graph)),
+                    resolutions,
+                    conflicts,
+                ) {
                     Some(side) => pick(side, &base_seq, &ours_seq, &theirs_seq).clone(),
-                    None => {
-                        conflicts.push(node_conflict(
-                            ConflictKind::ChildOrder,
-                            dom,
-                            node_id,
-                            None,
-                            Some(child_order_label(&base_seq, graph)),
-                            Some(child_order_label(&ours_seq, graph)),
-                            Some(child_order_label(&theirs_seq, graph)),
-                        ));
-                        continue;
-                    }
+                    None => continue,
                 }
             }
         };

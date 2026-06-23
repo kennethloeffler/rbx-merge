@@ -27,6 +27,7 @@ rbx_xml = { git = "https://github.com/rojo-rbx/rbx-dom.git", rev = "6af3f53d86c0
 anyhow = "1.0"
 blake3 = "1.8"
 clap = { version = "4.5", features = ["derive"] }
+criterion = "0.5"
 env_logger = "0.11"
 indexmap = "2.12"
 insta = { version = "1.14.1", features = ["yaml", "filters"] }

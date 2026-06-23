@@ -18,5 +18,10 @@ ustr.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+criterion.workspace = true
 insta.workspace = true
 proptest.workspace = true
+
+[[bench]]
+name = "merge"
+harness = false

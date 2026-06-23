@@ -382,7 +382,7 @@ fn merge_class(
     let base_value = entry.base.map(|id| base.node(id).class);
     let ours_value = entry.ours.map(|id| ours.node(id).class);
     let theirs_value = entry.theirs.map(|id| theirs.node(id).class);
-    merge_scalar(base_value, ours_value, theirs_value).or_else(|| {
+    three_way_option_merge(base_value, ours_value, theirs_value).or_else(|| {
         let (dom, id) = conflict_subject(entry, base, ours, theirs);
         let path = dom.path(id);
         if let Some(side) =
@@ -415,30 +415,33 @@ fn merge_name(
     let base_value = entry.base.map(|id| base.node(id).name.clone());
     let ours_value = entry.ours.map(|id| ours.node(id).name.clone());
     let theirs_value = entry.theirs.map(|id| theirs.node(id).name.clone());
-    merge_scalar(base_value.clone(), ours_value.clone(), theirs_value.clone()).or_else(|| {
-        let (dom, id) = conflict_subject(entry, base, ours, theirs);
-        let path = dom.path(id);
-        if let Some(side) = resolutions.lookup(&ConflictKind::InstanceIdentity, &path, Some("Name"))
-            && let Some(resolved) = pick(
-                side,
-                base_value.clone(),
-                ours_value.clone(),
-                theirs_value.clone(),
-            )
-        {
-            return Some(resolved);
-        }
-        conflicts.push(node_conflict(
-            ConflictKind::InstanceIdentity,
-            dom,
-            id,
-            Some("Name"),
-            base_value,
-            ours_value,
-            theirs_value,
-        ));
-        None
-    })
+    three_way_option_merge(base_value.clone(), ours_value.clone(), theirs_value.clone()).or_else(
+        || {
+            let (dom, id) = conflict_subject(entry, base, ours, theirs);
+            let path = dom.path(id);
+            if let Some(side) =
+                resolutions.lookup(&ConflictKind::InstanceIdentity, &path, Some("Name"))
+                && let Some(resolved) = pick(
+                    side,
+                    base_value.clone(),
+                    ours_value.clone(),
+                    theirs_value.clone(),
+                )
+            {
+                return Some(resolved);
+            }
+            conflicts.push(node_conflict(
+                ConflictKind::InstanceIdentity,
+                dom,
+                id,
+                Some("Name"),
+                base_value,
+                ours_value,
+                theirs_value,
+            ));
+            None
+        },
+    )
 }
 
 fn merge_parent(
@@ -453,7 +456,7 @@ fn merge_parent(
     let (base_parent, ours_parent, theirs_parent) =
         side_parents(entry, identities, base, ours, theirs);
 
-    match merge_optional_scalar(base_parent, ours_parent, theirs_parent) {
+    match three_way_merge(base_parent, ours_parent, theirs_parent) {
         Ok(parent) => parent,
         Err(()) => {
             let (dom, id) = conflict_subject(entry, base, ours, theirs);
@@ -850,46 +853,35 @@ fn merge_attributes(
     })
 }
 
-fn merge_scalar<T>(base: Option<T>, ours: Option<T>, theirs: Option<T>) -> Option<T>
+/// Three-way merge rule over a single value. If both sides are equal to the
+/// base, keep base; if only one side changed, take the changed side; if both
+/// changed to the same value, take it; if both changed differently, it is a
+/// conflict (`Err`).
+fn three_way_merge<T>(base: T, ours: T, theirs: T) -> Result<T, ()>
 where
-    T: Clone + PartialEq,
+    T: PartialEq,
 {
     if ours == base && theirs == base {
-        return base;
+        Ok(base)
+    } else if ours == base {
+        Ok(theirs)
+    } else if theirs == base {
+        Ok(ours)
+    } else if ours == theirs {
+        Ok(ours)
+    } else {
+        Err(())
     }
-    if ours == base {
-        return theirs;
-    }
-    if theirs == base {
-        return ours;
-    }
-    if ours == theirs {
-        return ours;
-    }
-    None
 }
 
-fn merge_optional_scalar<T>(
-    base: Option<T>,
-    ours: Option<T>,
-    theirs: Option<T>,
-) -> Result<Option<T>, ()>
+/// The three-way rule where an absent value is itself a legitimate outcome and a
+/// disagreement collapses to `None` rather than a distinguishable conflict. Used
+/// for class and name, where each side either has the node or does not.
+fn three_way_option_merge<T>(base: Option<T>, ours: Option<T>, theirs: Option<T>) -> Option<T>
 where
-    T: Clone + PartialEq,
+    T: PartialEq,
 {
-    if ours == base && theirs == base {
-        return Ok(base);
-    }
-    if ours == base {
-        return Ok(theirs);
-    }
-    if theirs == base {
-        return Ok(ours);
-    }
-    if ours == theirs {
-        return Ok(ours);
-    }
-    Err(())
+    three_way_merge(base, ours, theirs).unwrap_or(None)
 }
 
 fn conflict_subject<'a>(
@@ -1065,14 +1057,8 @@ fn merge_child_sequence(
     ours: &[MergeNodeId],
     theirs: &[MergeNodeId],
 ) -> ChildOrderMerge {
-    if ours == base && theirs == base {
-        return ChildOrderMerge::Clean(base.to_vec());
-    }
-    if ours == base {
-        return ChildOrderMerge::Clean(theirs.to_vec());
-    }
-    if theirs == base || ours == theirs {
-        return ChildOrderMerge::Clean(ours.to_vec());
+    if let Ok(seq) = three_way_merge(base, ours, theirs) {
+        return ChildOrderMerge::Clean(seq.to_vec());
     }
     if preserves_base_order(base, ours) && preserves_base_order(base, theirs) {
         return ChildOrderMerge::Clean(merge_insertions(base, ours, theirs));

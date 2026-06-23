@@ -46,7 +46,9 @@ use crate::merge_graph::{
 use crate::render::render_textconv;
 use crate::semantic::{SemanticDom, SemanticInputs};
 
-pub use crate::conflict::{Conflict, ConflictKind, DisplayValue, MergeReport};
+pub use crate::conflict::{
+    Conflict, ConflictKind, ConflictKindParseError, DisplayValue, MergeReport,
+};
 pub use crate::diagnostics::{Diagnostic, DiagnosticSeverity};
 pub use crate::format::{FileFormat, detect_format};
 pub use crate::resolve::{Resolutions, Side};

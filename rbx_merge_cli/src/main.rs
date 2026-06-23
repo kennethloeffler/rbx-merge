@@ -7,8 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use rbx_merge::{
-    Conflict, ConflictKind, Diagnostic, FileInput, MergeSettings, Resolutions, Side, merge_files,
-    textconv,
+    Conflict, Diagnostic, FileInput, MergeSettings, Resolutions, Side, merge_files, textconv,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -284,7 +283,7 @@ fn write_conflict_report(conflicts: &[Conflict]) -> String {
     out.push_str("# applies the fix (drop the dangling reference / the duplicate UniqueId).\n\n");
     for conflict in conflicts {
         out.push_str("[[conflict]]\n");
-        out.push_str(&format!("kind = {}\n", kind_name(&conflict.kind)));
+        out.push_str(&format!("kind = {}\n", conflict.kind));
         out.push_str(&format!("path = {}\n", conflict.path));
         out.push_str(&format!(
             "property = {}\n",
@@ -323,7 +322,7 @@ fn parse_resolutions(mut resolutions: Resolutions, text: &str) -> Result<Resolut
             };
             let value = value.trim();
             match key.trim() {
-                "kind" => kind = parse_kind(value),
+                "kind" => kind = value.parse().ok(),
                 "path" => path = Some(value.to_owned()),
                 "property" => {
                     property = (value != "<none>" && !value.is_empty()).then(|| value.to_owned())
@@ -337,33 +336,6 @@ fn parse_resolutions(mut resolutions: Resolutions, text: &str) -> Result<Resolut
         }
     }
     Ok(resolutions)
-}
-
-fn kind_name(kind: &ConflictKind) -> &'static str {
-    match kind {
-        ConflictKind::InstanceIdentity => "InstanceIdentity",
-        ConflictKind::UniqueIdCollision => "UniqueIdCollision",
-        ConflictKind::DeleteModify => "DeleteModify",
-        ConflictKind::PropertyValue => "PropertyValue",
-        ConflictKind::ParentMove => "ParentMove",
-        ConflictKind::ParentCycle => "ParentCycle",
-        ConflictKind::ChildOrder => "ChildOrder",
-        ConflictKind::RefTarget => "RefTarget",
-    }
-}
-
-fn parse_kind(value: &str) -> Option<ConflictKind> {
-    match value {
-        "InstanceIdentity" => Some(ConflictKind::InstanceIdentity),
-        "UniqueIdCollision" => Some(ConflictKind::UniqueIdCollision),
-        "DeleteModify" => Some(ConflictKind::DeleteModify),
-        "PropertyValue" => Some(ConflictKind::PropertyValue),
-        "ParentMove" => Some(ConflictKind::ParentMove),
-        "ParentCycle" => Some(ConflictKind::ParentCycle),
-        "ChildOrder" => Some(ConflictKind::ChildOrder),
-        "RefTarget" => Some(ConflictKind::RefTarget),
-        _ => None,
-    }
 }
 
 fn parse_side(value: &str) -> Option<Side> {
@@ -395,7 +367,7 @@ fn print_conflicts(conflicts: &[Conflict]) {
     eprintln!("semantic merge conflicts: {}", conflicts.len());
     for conflict in conflicts {
         eprintln!(
-            "- kind={:?} path={} class={} name={} property={}",
+            "- kind={} path={} class={} name={} property={}",
             conflict.kind,
             conflict.path,
             conflict.class,

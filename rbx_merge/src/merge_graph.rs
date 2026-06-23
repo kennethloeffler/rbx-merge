@@ -319,12 +319,7 @@ fn side_node_changed_from_base(
     }
 
     let doms = match side_source {
-        ValueSource::Ours => SemanticInputs {
-            base,
-            ours: side,
-            theirs: side,
-        },
-        ValueSource::Theirs => SemanticInputs {
+        ValueSource::Ours | ValueSource::Theirs => SemanticInputs {
             base,
             ours: side,
             theirs: side,

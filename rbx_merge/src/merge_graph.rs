@@ -22,25 +22,25 @@ use crate::semantic::{
 };
 
 #[derive(Debug, Clone)]
-pub(crate) struct MergedGraph {
-    pub(crate) root: MergeNodeId,
-    pub(crate) nodes: IndexMap<MergeNodeId, MergedInstance>,
+struct MergedGraph {
+    root: MergeNodeId,
+    nodes: IndexMap<MergeNodeId, MergedInstance>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct MergedInstance {
-    pub(crate) class: Ustr,
-    pub(crate) name: String,
-    pub(crate) parent: Option<MergeNodeId>,
-    pub(crate) children: Vec<MergeNodeId>,
-    pub(crate) properties: BTreeMap<Ustr, MergedProperty>,
-    pub(crate) referent: Ref,
+struct MergedInstance {
+    class: Ustr,
+    name: String,
+    parent: Option<MergeNodeId>,
+    children: Vec<MergeNodeId>,
+    properties: BTreeMap<Ustr, MergedProperty>,
+    referent: Ref,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct MergedProperty {
-    pub(crate) value: Variant,
-    pub(crate) source: ValueSource,
+struct MergedProperty {
+    value: Variant,
+    source: ValueSource,
 }
 
 fn child_merge_ids(
@@ -69,10 +69,10 @@ fn child_merge_ids(
 /// resolved `Side`. Bundling them lets those operations travel as a single value
 /// instead of three parallel arguments.
 #[derive(Clone, Copy)]
-pub(crate) struct Sides<T> {
-    pub(crate) base: T,
-    pub(crate) ours: T,
-    pub(crate) theirs: T,
+struct Sides<T> {
+    base: T,
+    ours: T,
+    theirs: T,
 }
 
 impl<T> Sides<T> {
@@ -151,10 +151,10 @@ fn side_source(side: Side) -> ValueSource {
 /// `conflicts` sink is threaded separately to avoid borrow conflicts with the
 /// identity iteration that drives the merge.
 #[derive(Clone, Copy)]
-pub(crate) struct MergeCtx<'a> {
-    pub(crate) doms: SemanticInputs<'a>,
-    pub(crate) identities: &'a IdentitySet,
-    pub(crate) resolutions: &'a Resolutions,
+struct MergeCtx<'a> {
+    doms: SemanticInputs<'a>,
+    identities: &'a IdentitySet,
+    resolutions: &'a Resolutions,
 }
 
 impl<'a> MergeCtx<'a> {
@@ -169,7 +169,55 @@ impl<'a> MergeCtx<'a> {
     }
 }
 
-pub(crate) fn merge_semantic_graph(
+/// The result of a full three-way merge: either a lowered `WeakDom` ready to
+/// encode, or the conflicts that prevented one. Diagnostics are accumulated
+/// separately through the caller's sink.
+pub(crate) enum MergeOutcome {
+    Merged(WeakDom),
+    Conflicts(Vec<Conflict>),
+}
+
+/// Run the entire three-way merge: build the merged graph, resolve structure
+/// and child order, run every conflict/diagnostic pass in order, and lower a
+/// clean result back to a `WeakDom`. The pass ordering and the points at which
+/// accumulated conflicts abort the merge are internal to this function; callers
+/// supply the three sides and a diagnostics sink and receive a [`MergeOutcome`].
+pub(crate) fn merge(
+    doms: SemanticInputs<'_>,
+    identities: &IdentitySet,
+    resolutions: &Resolutions,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<MergeOutcome, Error> {
+    let ctx = MergeCtx {
+        doms,
+        identities,
+        resolutions,
+    };
+
+    let mut conflicts = Vec::new();
+    let mut graph = merge_semantic_graph(&ctx, &mut conflicts)?;
+
+    detect_parent_cycles(&ctx, &mut graph, &mut conflicts);
+    detect_unique_id_collisions(&mut graph, resolutions, &mut conflicts);
+    detect_ref_targets(&ctx, &mut graph, &mut conflicts);
+    if !conflicts.is_empty() {
+        return Ok(MergeOutcome::Conflicts(conflicts));
+    }
+
+    assign_child_order(&ctx, &mut graph, &mut conflicts);
+    detect_unique_id_collisions(&mut graph, resolutions, &mut conflicts);
+    if !conflicts.is_empty() {
+        return Ok(MergeOutcome::Conflicts(conflicts));
+    }
+
+    detect_dropped_references(&graph, identities, &doms, diagnostics);
+    scan_unknown_properties(&graph, diagnostics);
+
+    let dom = build_weak_dom(&graph, identities, &doms)?;
+    Ok(MergeOutcome::Merged(dom))
+}
+
+fn merge_semantic_graph(
     ctx: &MergeCtx<'_>,
     conflicts: &mut Vec<Conflict>,
 ) -> Result<MergedGraph, Error> {
@@ -519,7 +567,7 @@ fn side_parents(ctx: &MergeCtx<'_>, entry: &MergeEntry) -> Sides<Option<MergeNod
 /// side reproduces that side's own (acyclic) tree for them, so the loop is gone.
 /// Members left on a cycle afterwards — no resolution, or a partial one that did
 /// not break the loop — are reported as conflicts.
-pub(crate) fn detect_parent_cycles(
+fn detect_parent_cycles(
     ctx: &MergeCtx<'_>,
     graph: &mut MergedGraph,
     conflicts: &mut Vec<Conflict>,
@@ -872,7 +920,7 @@ fn choose_referent(entry: &MergeEntry, doms: &SemanticInputs<'_>, used: &mut Has
     referent
 }
 
-pub(crate) fn assign_child_order(
+fn assign_child_order(
     ctx: &MergeCtx<'_>,
     graph: &mut MergedGraph,
     conflicts: &mut Vec<Conflict>,
@@ -1058,7 +1106,7 @@ fn append_until_anchor(
 /// same-`UniqueId` additions across sides are unified by identity matching, so
 /// this rarely fires — but the merged graph is assembled independently of those
 /// guarantees, so the check is kept.
-pub(crate) fn detect_unique_id_collisions(
+fn detect_unique_id_collisions(
     graph: &mut MergedGraph,
     resolutions: &Resolutions,
     conflicts: &mut Vec<Conflict>,
@@ -1153,7 +1201,7 @@ fn graph_path(graph: &MergedGraph, id: MergeNodeId) -> String {
 /// are stable across files, so a property still holding a dropped instance's
 /// referent — even one written by the side that performed the deletion — is
 /// recognized as dangling.
-pub(crate) fn detect_ref_targets(
+fn detect_ref_targets(
     ctx: &MergeCtx<'_>,
     graph: &mut MergedGraph,
     conflicts: &mut Vec<Conflict>,
@@ -1282,7 +1330,7 @@ fn single_ref_target(value: &Variant) -> Option<Ref> {
 /// side's reference wins and dangles; here the deleting side's nilled reference
 /// wins and the link is silently lost. Intentional repoints (the merged value
 /// points at a live instance) are not reported.
-pub(crate) fn detect_dropped_references(
+fn detect_dropped_references(
     graph: &MergedGraph,
     identities: &IdentitySet,
     doms: &SemanticInputs<'_>,
@@ -1335,7 +1383,7 @@ pub(crate) fn detect_dropped_references(
 /// Record merged properties that the reflection database does not recognize.
 /// They round-trip unchanged, but are reported so callers can audit lossy or
 /// format-specific behavior at a concrete path.
-pub(crate) fn scan_unknown_properties(graph: &MergedGraph, diagnostics: &mut Vec<Diagnostic>) {
+fn scan_unknown_properties(graph: &MergedGraph, diagnostics: &mut Vec<Diagnostic>) {
     let Ok(database) = rbx_reflection_database::get() else {
         return;
     };
@@ -1384,7 +1432,7 @@ fn is_known_property(
     false
 }
 
-pub(crate) fn build_weak_dom(
+fn build_weak_dom(
     graph: &MergedGraph,
     identities: &IdentitySet,
     doms: &SemanticInputs<'_>,

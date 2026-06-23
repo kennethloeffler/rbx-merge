@@ -39,10 +39,7 @@ use thiserror::Error;
 
 use crate::format::{decode_file, encode_file};
 use crate::identity::build_identities;
-use crate::merge_graph::{
-    MergeCtx, assign_child_order, build_weak_dom, detect_dropped_references, detect_parent_cycles,
-    detect_ref_targets, detect_unique_id_collisions, merge_semantic_graph, scan_unknown_properties,
-};
+use crate::merge_graph::{MergeOutcome, merge};
 use crate::render::render_textconv;
 use crate::semantic::{SemanticDom, SemanticInputs};
 
@@ -150,42 +147,17 @@ pub fn merge_files(
         ours: &ours_dom,
         theirs: &theirs_dom,
     };
-    let ctx = MergeCtx {
-        doms,
-        identities: &identities,
-        resolutions: &settings.resolutions,
+    let dom = match merge(doms, &identities, &settings.resolutions, &mut diagnostics)? {
+        MergeOutcome::Conflicts(conflicts) => {
+            return Ok(MergeReport {
+                merged: None,
+                conflicts,
+                diagnostics,
+            });
+        }
+        MergeOutcome::Merged(dom) => dom,
     };
 
-    let mut conflicts = Vec::new();
-    let mut graph = merge_semantic_graph(&ctx, &mut conflicts)?;
-
-    detect_parent_cycles(&ctx, &mut graph, &mut conflicts);
-    detect_unique_id_collisions(&mut graph, &settings.resolutions, &mut conflicts);
-    detect_ref_targets(&ctx, &mut graph, &mut conflicts);
-
-    if !conflicts.is_empty() {
-        return Ok(MergeReport {
-            merged: None,
-            conflicts,
-            diagnostics,
-        });
-    }
-
-    assign_child_order(&ctx, &mut graph, &mut conflicts);
-    detect_unique_id_collisions(&mut graph, &settings.resolutions, &mut conflicts);
-
-    if !conflicts.is_empty() {
-        return Ok(MergeReport {
-            merged: None,
-            conflicts,
-            diagnostics,
-        });
-    }
-
-    detect_dropped_references(&graph, &identities, &doms, &mut diagnostics);
-    scan_unknown_properties(&graph, &mut diagnostics);
-
-    let dom = build_weak_dom(&graph, &identities, &doms)?;
     let root_refs = dom.root().children().to_vec();
     let merged = encode_file(&dom, &root_refs, output_format)?;
 
@@ -198,7 +170,7 @@ pub fn merge_files(
 
     Ok(MergeReport {
         merged: Some(merged),
-        conflicts,
+        conflicts: Vec::new(),
         diagnostics,
     })
 }

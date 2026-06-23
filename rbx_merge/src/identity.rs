@@ -33,7 +33,7 @@ pub(crate) struct MergeEntry {
 }
 
 impl IdentitySet {
-    pub(crate) fn insert(
+    fn insert(
         &mut self,
         base: Option<NodeId>,
         ours: Option<NodeId>,

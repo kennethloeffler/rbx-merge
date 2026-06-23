@@ -27,7 +27,7 @@ impl FileFormat {
         }
     }
 
-    pub(crate) fn is_xml(self) -> bool {
+    fn is_xml(self) -> bool {
         matches!(self, Self::XmlModel | Self::XmlPlace)
     }
 }

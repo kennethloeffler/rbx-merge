@@ -920,11 +920,7 @@ fn choose_referent(entry: &MergeEntry, doms: &SemanticInputs<'_>, used: &mut Has
     referent
 }
 
-fn assign_child_order(
-    ctx: &MergeCtx<'_>,
-    graph: &mut MergedGraph,
-    conflicts: &mut Vec<Conflict>,
-) {
+fn assign_child_order(ctx: &MergeCtx<'_>, graph: &mut MergedGraph, conflicts: &mut Vec<Conflict>) {
     let (doms, identities) = (&ctx.doms, ctx.identities);
     let ids: Vec<_> = graph.nodes.keys().copied().collect();
     for id in ids {
@@ -1201,11 +1197,7 @@ fn graph_path(graph: &MergedGraph, id: MergeNodeId) -> String {
 /// are stable across files, so a property still holding a dropped instance's
 /// referent — even one written by the side that performed the deletion — is
 /// recognized as dangling.
-fn detect_ref_targets(
-    ctx: &MergeCtx<'_>,
-    graph: &mut MergedGraph,
-    conflicts: &mut Vec<Conflict>,
-) {
+fn detect_ref_targets(ctx: &MergeCtx<'_>, graph: &mut MergedGraph, conflicts: &mut Vec<Conflict>) {
     let (doms, identities) = (&ctx.doms, ctx.identities);
     let deleted = dropped_referents(graph, identities, doms);
     if deleted.is_empty() {

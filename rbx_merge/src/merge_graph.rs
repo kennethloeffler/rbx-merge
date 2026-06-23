@@ -173,10 +173,9 @@ pub(crate) fn merge_semantic_graph(
     ctx: &MergeCtx<'_>,
     conflicts: &mut Vec<Conflict>,
 ) -> Result<MergedGraph, Error> {
-    let root = *ctx
+    let root = ctx
         .identities
-        .base_to_merge
-        .get(&ctx.doms.base.root)
+        .lookup(ValueSource::Base, ctx.doms.base.root())
         .ok_or_else(|| Error::Internal("base root was not assigned a merge identity".to_owned()))?;
     let mut graph = MergedGraph {
         root,
@@ -184,7 +183,7 @@ pub(crate) fn merge_semantic_graph(
     };
     let mut used_refs = HashSet::new();
 
-    for (&merge_id, entry) in &ctx.identities.entries {
+    for (merge_id, entry) in ctx.identities.entries() {
         match deletion_decision(ctx, entry, conflicts) {
             NodeDecision::Drop => continue,
             NodeDecision::TakeSide(side) => {
@@ -383,7 +382,7 @@ fn side_node_changed_from_base(
 
     let base_parent = base_node
         .parent
-        .and_then(|parent| identities.base_to_merge.get(&parent).copied());
+        .and_then(|parent| identities.lookup(ValueSource::Base, parent));
     let side_parent = side_node
         .parent
         .and_then(|parent| identities.lookup(side_source, parent));
@@ -394,7 +393,7 @@ fn side_node_changed_from_base(
     let base_children: Vec<_> = base_node
         .children
         .iter()
-        .filter_map(|child| identities.base_to_merge.get(child).copied())
+        .filter_map(|child| identities.lookup(ValueSource::Base, *child))
         .collect();
     let side_children: Vec<_> = side_node
         .children
@@ -495,15 +494,15 @@ fn side_parents(ctx: &MergeCtx<'_>, entry: &MergeEntry) -> Sides<Option<MergeNod
         base: entry
             .base
             .and_then(|id| doms.base.node(id).parent)
-            .and_then(|id| identities.base_to_merge.get(&id).copied()),
+            .and_then(|id| identities.lookup(ValueSource::Base, id)),
         ours: entry
             .ours
             .and_then(|id| doms.ours.node(id).parent)
-            .and_then(|id| identities.ours_to_merge.get(&id).copied()),
+            .and_then(|id| identities.lookup(ValueSource::Ours, id)),
         theirs: entry
             .theirs
             .and_then(|id| doms.theirs.node(id).parent)
-            .and_then(|id| identities.theirs_to_merge.get(&id).copied()),
+            .and_then(|id| identities.lookup(ValueSource::Theirs, id)),
     }
 }
 
@@ -536,7 +535,7 @@ pub(crate) fn detect_parent_cycles(
     // original per-side parents (not the graph's current links), so resolving
     // every member to the same side yields that side's acyclic structure.
     for &id in &members {
-        let Some(entry) = ctx.identities.entries.get(&id) else {
+        let Some(entry) = ctx.identities.entry(id) else {
             continue;
         };
         let (dom, node_id) = conflict_subject(entry, &ctx.doms);
@@ -557,7 +556,7 @@ pub(crate) fn detect_parent_cycles(
         if !node_is_on_parent_cycle(graph, id) {
             continue;
         }
-        let Some(entry) = ctx.identities.entries.get(&id) else {
+        let Some(entry) = ctx.identities.entry(id) else {
             continue;
         };
         let (dom, node_id) = conflict_subject(entry, &ctx.doms);
@@ -807,7 +806,7 @@ fn conflict_subject<'a>(
 
 /// Render a parent merge identity as a human-readable path for conflict output.
 fn parent_label(ctx: &MergeCtx<'_>, parent: MergeNodeId) -> String {
-    let entry = match ctx.identities.entries.get(&parent) {
+    let entry = match ctx.identities.entry(parent) {
         Some(entry) => entry,
         None => return format!("{parent:?}"),
     };
@@ -884,7 +883,7 @@ pub(crate) fn assign_child_order(
         let Some(node) = graph.nodes.get(&id).cloned() else {
             continue;
         };
-        let entry = identities.entries.get(&id).unwrap();
+        let entry = identities.entry(id).unwrap();
         let seqs = Sides {
             base: entry.base.map(|parent| {
                 child_merge_ids(doms.base, parent, ValueSource::Base, identities, id, graph)
@@ -1187,8 +1186,7 @@ pub(crate) fn detect_ref_targets(
                     break;
                 }
                 let target_path = identities
-                    .entries
-                    .get(&target)
+                    .entry(target)
                     .map(|entry| deleted_identity_path(entry, doms))
                     .unwrap_or_else(|| format!("{referent}"));
                 conflicts.push(Conflict {
@@ -1251,7 +1249,7 @@ fn dropped_referents(
     doms: &SemanticInputs<'_>,
 ) -> HashMap<Ref, MergeNodeId> {
     let mut deleted = HashMap::new();
-    for (&merge_id, entry) in &identities.entries {
+    for (merge_id, entry) in identities.entries() {
         if graph.nodes.contains_key(&merge_id) {
             continue;
         }
@@ -1296,7 +1294,7 @@ pub(crate) fn detect_dropped_references(
     }
 
     for (&merge_id, node) in &graph.nodes {
-        let Some(entry) = identities.entries.get(&merge_id) else {
+        let Some(entry) = identities.entry(merge_id) else {
             continue;
         };
         let Some(base_id) = entry.base else {
@@ -1321,8 +1319,7 @@ pub(crate) fn detect_dropped_references(
                 .is_none()
             {
                 let target_path = identities
-                    .entries
-                    .get(&target)
+                    .entry(target)
                     .map(|target_entry| deleted_identity_path(target_entry, doms))
                     .unwrap_or_else(|| "<unknown>".to_owned());
                 diagnostics.push(dropped_reference_diagnostic(
@@ -1409,7 +1406,7 @@ impl BuildRefMaps {
         let mut base_refs = HashMap::new();
         let mut ours_refs = HashMap::new();
         let mut theirs_refs = HashMap::new();
-        for (&merge_id, entry) in &identities.entries {
+        for (merge_id, entry) in identities.entries() {
             if !graph.nodes.contains_key(&merge_id) {
                 continue;
             }

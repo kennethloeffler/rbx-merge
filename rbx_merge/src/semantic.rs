@@ -31,9 +31,9 @@ pub(crate) struct SemanticInputs<'a> {
 
 #[derive(Debug)]
 pub(crate) struct SemanticDom {
-    pub(crate) root: NodeId,
-    pub(crate) nodes: IndexMap<NodeId, SemanticInstance>,
-    pub(crate) ref_to_node: HashMap<Ref, NodeId>,
+    root: NodeId,
+    nodes: IndexMap<NodeId, SemanticInstance>,
+    ref_to_node: HashMap<Ref, NodeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +94,21 @@ impl SemanticDom {
         }
         self.nodes.get_mut(&id).unwrap().children = children;
         Ok(id)
+    }
+
+    /// The synthetic root node's id.
+    pub(crate) fn root(&self) -> NodeId {
+        self.root
+    }
+
+    /// Every node id, in insertion (document) order.
+    pub(crate) fn node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.nodes.keys().copied()
+    }
+
+    /// The node a source referent decoded to, if any.
+    pub(crate) fn node_for_ref(&self, referent: Ref) -> Option<NodeId> {
+        self.ref_to_node.get(&referent).copied()
     }
 
     pub(crate) fn node(&self, id: NodeId) -> &SemanticInstance {

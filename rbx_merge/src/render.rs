@@ -190,7 +190,7 @@ fn ref_display(referent: Ref, source: ValueSource, doms: &SemanticInputs<'_>) ->
         ValueSource::Theirs => Some(doms.theirs),
         ValueSource::Merged => None,
     };
-    match dom.and_then(|dom| dom.ref_to_node.get(&referent).map(|&node| dom.path(node))) {
+    match dom.and_then(|dom| dom.node_for_ref(referent).map(|node| dom.path(node))) {
         Some(path) => format!("→ {path}"),
         None => "→ <external>".to_owned(),
     }
@@ -204,7 +204,7 @@ pub(crate) fn render_textconv(dom: &SemanticDom, format: FileFormat) -> String {
     };
     let mut out = String::new();
     out.push_str(&format!("# rbx-merge — {format}\n"));
-    render_node(dom, dom.root, 0, &mut out, &doms);
+    render_node(dom, dom.root(), 0, &mut out, &doms);
     out
 }
 

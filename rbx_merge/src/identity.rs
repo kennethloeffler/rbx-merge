@@ -19,10 +19,10 @@ pub(crate) struct MergeNodeId(pub(crate) usize);
 
 #[derive(Debug, Default)]
 pub(crate) struct IdentitySet {
-    pub(crate) entries: IndexMap<MergeNodeId, MergeEntry>,
-    pub(crate) base_to_merge: HashMap<NodeId, MergeNodeId>,
-    pub(crate) ours_to_merge: HashMap<NodeId, MergeNodeId>,
-    pub(crate) theirs_to_merge: HashMap<NodeId, MergeNodeId>,
+    entries: IndexMap<MergeNodeId, MergeEntry>,
+    base_to_merge: HashMap<NodeId, MergeNodeId>,
+    ours_to_merge: HashMap<NodeId, MergeNodeId>,
+    theirs_to_merge: HashMap<NodeId, MergeNodeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +58,16 @@ impl IdentitySet {
         self.theirs_to_merge.insert(theirs, id);
     }
 
+    /// Every merge identity, in insertion order, paired with its per-side nodes.
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (MergeNodeId, &MergeEntry)> + '_ {
+        self.entries.iter().map(|(&id, entry)| (id, entry))
+    }
+
+    /// The per-side nodes for one merge identity, if it exists.
+    pub(crate) fn entry(&self, id: MergeNodeId) -> Option<&MergeEntry> {
+        self.entries.get(&id)
+    }
+
     pub(crate) fn lookup(&self, source: ValueSource, node: NodeId) -> Option<MergeNodeId> {
         match source {
             ValueSource::Base => self.base_to_merge.get(&node).copied(),
@@ -77,9 +87,9 @@ impl IdentitySet {
             return None;
         }
         let node = match source {
-            ValueSource::Base => doms.base.ref_to_node.get(&referent).copied(),
-            ValueSource::Ours => doms.ours.ref_to_node.get(&referent).copied(),
-            ValueSource::Theirs => doms.theirs.ref_to_node.get(&referent).copied(),
+            ValueSource::Base => doms.base.node_for_ref(referent),
+            ValueSource::Ours => doms.ours.node_for_ref(referent),
+            ValueSource::Theirs => doms.theirs.node_for_ref(referent),
             ValueSource::Merged => None,
         }?;
         self.lookup(source, node)
@@ -96,7 +106,7 @@ pub(crate) fn build_identities(
 
     let mut identities = IdentitySet::default();
     let mut diagnostics = Vec::new();
-    for (&base_id, _) in &base.nodes {
+    for base_id in base.node_ids() {
         identities.insert(
             Some(base_id),
             base_to_ours.map.get(&base_id).copied(),
@@ -106,14 +116,14 @@ pub(crate) fn build_identities(
 
     emit_heuristic_diagnostics(base, &base_to_ours, &base_to_theirs, &mut diagnostics);
 
-    for (&ours_id, _) in &ours.nodes {
+    for ours_id in ours.node_ids() {
         if identities.ours_to_merge.contains_key(&ours_id) {
             continue;
         }
         identities.insert(None, Some(ours_id), None);
     }
 
-    for (&theirs_id, _) in &theirs.nodes {
+    for theirs_id in theirs.node_ids() {
         if identities.theirs_to_merge.contains_key(&theirs_id) {
             continue;
         }
@@ -222,8 +232,8 @@ fn match_base_to_side(base: &SemanticDom, side: &SemanticDom) -> SideMatch {
     let mut used_side = HashSet::new();
     let mut positional = Vec::new();
     let mut renames = Vec::new();
-    result.insert(base.root, side.root);
-    used_side.insert(side.root);
+    result.insert(base.root(), side.root());
+    used_side.insert(side.root());
 
     // UniqueId is authoritative: it identifies an instance across renames,
     // moves, and same-name collisions. WeakDom guarantees uniqueness per file,
@@ -405,7 +415,7 @@ fn emit_heuristic_diagnostics(
 
 fn unique_id_index(dom: &SemanticDom) -> HashMap<UniqueId, Vec<NodeId>> {
     let mut by_unique_id: HashMap<UniqueId, Vec<NodeId>> = HashMap::new();
-    for (&id, _) in &dom.nodes {
+    for id in dom.node_ids() {
         if let Some(unique_id) = dom.unique_id(id) {
             by_unique_id.entry(unique_id).or_default().push(id);
         }
@@ -419,8 +429,8 @@ fn match_services(
     result: &mut HashMap<NodeId, NodeId>,
     used_side: &mut HashSet<NodeId>,
 ) {
-    let base_services = service_children_by_class(base, base.root);
-    let side_services = service_children_by_class(side, side.root);
+    let base_services = service_children_by_class(base, base.root());
+    let side_services = service_children_by_class(side, side.root());
     for (class, base_id) in base_services {
         let Some(side_id) = side_services.get(&class).copied() else {
             continue;

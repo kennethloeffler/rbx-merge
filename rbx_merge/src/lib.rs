@@ -40,7 +40,7 @@ use thiserror::Error;
 use crate::format::{decode_file, encode_file};
 use crate::identity::build_identities;
 use crate::merge_graph::{
-    assign_child_order, build_weak_dom, detect_dropped_references, detect_parent_cycles,
+    MergeCtx, assign_child_order, build_weak_dom, detect_dropped_references, detect_parent_cycles,
     detect_ref_targets, detect_unique_id_collisions, merge_semantic_graph, scan_unknown_properties,
 };
 use crate::render::render_textconv;
@@ -150,34 +150,18 @@ pub fn merge_files(
         ours: &ours_dom,
         theirs: &theirs_dom,
     };
+    let ctx = MergeCtx {
+        doms,
+        identities: &identities,
+        resolutions: &settings.resolutions,
+    };
 
     let mut conflicts = Vec::new();
-    let mut graph = merge_semantic_graph(
-        &base_dom,
-        &ours_dom,
-        &theirs_dom,
-        &identities,
-        &settings.resolutions,
-        &mut conflicts,
-    )?;
+    let mut graph = merge_semantic_graph(&ctx, &mut conflicts)?;
 
-    detect_parent_cycles(
-        &mut graph,
-        &identities,
-        &base_dom,
-        &ours_dom,
-        &theirs_dom,
-        &settings.resolutions,
-        &mut conflicts,
-    );
+    detect_parent_cycles(&ctx, &mut graph, &mut conflicts);
     detect_unique_id_collisions(&mut graph, &settings.resolutions, &mut conflicts);
-    detect_ref_targets(
-        &mut graph,
-        &identities,
-        &doms,
-        &settings.resolutions,
-        &mut conflicts,
-    );
+    detect_ref_targets(&ctx, &mut graph, &mut conflicts);
 
     if !conflicts.is_empty() {
         return Ok(MergeReport {
@@ -187,15 +171,7 @@ pub fn merge_files(
         });
     }
 
-    assign_child_order(
-        &mut graph,
-        &base_dom,
-        &ours_dom,
-        &theirs_dom,
-        &identities,
-        &settings.resolutions,
-        &mut conflicts,
-    );
+    assign_child_order(&ctx, &mut graph, &mut conflicts);
     detect_unique_id_collisions(&mut graph, &settings.resolutions, &mut conflicts);
 
     if !conflicts.is_empty() {

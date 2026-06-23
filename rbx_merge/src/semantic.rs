@@ -22,6 +22,7 @@ pub(crate) enum ValueSource {
     Merged,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct SemanticInputs<'a> {
     pub(crate) base: &'a SemanticDom,
     pub(crate) ours: &'a SemanticDom,

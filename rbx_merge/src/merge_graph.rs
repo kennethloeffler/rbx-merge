@@ -923,10 +923,22 @@ fn choose_referent(entry: &MergeEntry, doms: &SemanticInputs<'_>, used: &mut Has
 fn assign_child_order(ctx: &MergeCtx<'_>, graph: &mut MergedGraph, conflicts: &mut Vec<Conflict>) {
     let (doms, identities) = (&ctx.doms, ctx.identities);
     let ids: Vec<_> = graph.nodes.keys().copied().collect();
+
+    // Parent links are fixed for the duration of this pass (only `children` is
+    // rewritten), so map every parent to its graph children once in insertion
+    // order rather than rescanning all nodes per parent in
+    // `append_surviving_children` (which made the pass O(N^2) in node count).
+    let mut children_by_parent: HashMap<MergeNodeId, Vec<MergeNodeId>> = HashMap::new();
+    for (&id, node) in &graph.nodes {
+        if let Some(parent) = node.parent {
+            children_by_parent.entry(parent).or_default().push(id);
+        }
+    }
+
     for id in ids {
-        let Some(node) = graph.nodes.get(&id).cloned() else {
+        if !graph.nodes.contains_key(&id) {
             continue;
-        };
+        }
         let entry = identities.entry(id).unwrap();
         let seqs = Sides {
             base: entry.base.map(|parent| {
@@ -971,24 +983,27 @@ fn assign_child_order(ctx: &MergeCtx<'_>, graph: &mut MergedGraph, conflicts: &m
         // A node kept by a resolved delete/modify survives in the graph but no
         // side's sequence places it; append any such surviving children so they
         // are not orphaned out of the output.
-        append_surviving_children(graph, id, &mut children);
+        append_surviving_children(children_by_parent.get(&id), &mut children);
         if let Some(node) = graph.nodes.get_mut(&id) {
             node.children = children;
         }
-        let _ = node;
     }
 }
 
-/// Append graph children of `parent` that the merged sequence omitted, keeping
-/// them in graph (identity) order for determinism.
+/// Append a parent's graph children that the merged sequence omitted, keeping
+/// them in graph (identity) order for determinism. `graph_children` is the
+/// parent's precomputed child list (in insertion order), or `None` if it has
+/// none.
 fn append_surviving_children(
-    graph: &MergedGraph,
-    parent: MergeNodeId,
+    graph_children: Option<&Vec<MergeNodeId>>,
     children: &mut Vec<MergeNodeId>,
 ) {
+    let Some(graph_children) = graph_children else {
+        return;
+    };
     let present: HashSet<MergeNodeId> = children.iter().copied().collect();
-    for (&id, node) in &graph.nodes {
-        if node.parent == Some(parent) && !present.contains(&id) {
+    for &id in graph_children {
+        if !present.contains(&id) {
             children.push(id);
         }
     }

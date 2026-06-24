@@ -157,73 +157,117 @@ pub(crate) fn variant_options_equal(
     match (left, right) {
         (None, None) => true,
         (Some(left), Some(right)) => {
-            variant_key(left, left_source, identities, doms)
-                == variant_key(right, right_source, identities, doms)
+            variant_eq(left, left_source, right, right_source, identities, doms)
         }
         _ => false,
     }
 }
 
-pub(crate) fn variant_key(
-    value: &Variant,
-    source: ValueSource,
+/// Source-aware value equality: the predicate the three-way merge applies to
+/// property values to decide whether two sides hold "the same value". References
+/// are compared by the merged instance they resolve to (so the same target
+/// matches across files despite differing raw referents), and floats by their bit
+/// pattern (so `-0.0` stays distinct from `+0.0`).
+///
+/// This compares values structurally rather than rendering each to a `String`
+/// key and comparing the keys, which avoids allocating — and, for composite
+/// types, `Debug`-formatting — a string per value on the merge's hottest path.
+///
+/// One deliberate consequence of comparing structurally: floats *nested* in
+/// composite types (`Vector3`, `CFrame`, `Color3`, ...) now compare with IEEE
+/// equality via the value's own `PartialEq` rather than bitwise, so `+0.0` and
+/// `-0.0` components are equal and distinct-bit `NaN`s are not. The former key
+/// distinguished them only as an artifact of `Debug` formatting; scalar floats
+/// remain bit-exact as before.
+pub(crate) fn variant_eq(
+    left: &Variant,
+    left_source: ValueSource,
+    right: &Variant,
+    right_source: ValueSource,
     identities: &IdentitySet,
     doms: &SemanticInputs<'_>,
-) -> String {
-    match value {
-        Variant::Float32(value) => format!("Float32:{:08x}", value.to_bits()),
-        Variant::Float64(value) => format!("Float64:{:016x}", value.to_bits()),
-        Variant::Ref(referent) => format!("Ref:{}", ref_key(*referent, source, identities, doms)),
-        Variant::Content(content) => match content.value() {
-            ContentType::Object(referent) => {
-                format!(
-                    "Content:Object:{}",
-                    ref_key(*referent, source, identities, doms)
-                )
-            }
-            ContentType::Uri(uri) => format!("Content:Uri:{uri:?}"),
-            ContentType::None => "Content:None".to_owned(),
-            _ => "Content:<unknown>".to_owned(),
-        },
-        Variant::Attributes(attributes) => {
-            let mut out = String::from("Attributes:{");
-            for (key, value) in attributes {
-                out.push_str(key);
-                out.push('=');
-                out.push_str(&variant_key(value, source, identities, doms));
-                out.push(';');
-            }
-            out.push('}');
-            out
+) -> bool {
+    match (left, right) {
+        (Variant::Float32(a), Variant::Float32(b)) => a.to_bits() == b.to_bits(),
+        (Variant::Float64(a), Variant::Float64(b)) => a.to_bits() == b.to_bits(),
+        (Variant::Ref(a), Variant::Ref(b)) => {
+            ref_eq(*a, left_source, *b, right_source, identities, doms)
         }
-        Variant::Tags(tags) => {
-            let joined = tags
-                .iter()
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-                .join("\0");
-            format!("Tags:{joined:?}")
+        (Variant::Content(a), Variant::Content(b)) => {
+            content_eq(a.value(), left_source, b.value(), right_source, identities, doms)
         }
-        Variant::BinaryString(value) => format!("BinaryString:{}", bytes_summary(value.as_ref())),
-        Variant::SharedString(value) => format!("SharedString:{}", bytes_summary(value.data())),
-        Variant::NetAssetRef(value) => format!("NetAssetRef:{}", bytes_summary(value.data())),
-        other => format!("{other:?}"),
+        // Attributes can nest references, so recurse with source awareness. Both
+        // maps iterate in sorted key order (they are `BTreeMap`-backed), so equal
+        // length plus a positional compare settles equality.
+        (Variant::Attributes(a), Variant::Attributes(b)) => {
+            a.len() == b.len()
+                && a.iter().zip(b.iter()).all(|((ka, va), (kb, vb))| {
+                    ka == kb && variant_eq(va, left_source, vb, right_source, identities, doms)
+                })
+        }
+        // Every remaining variant is a plain value with no source component, so
+        // its own `PartialEq` is the comparison — a direct byte compare for the
+        // string-like types, a field compare for the rest. Mismatched variants
+        // (different kinds) are never equal.
+        _ => left == right,
     }
 }
 
-fn ref_key(
-    referent: Ref,
-    source: ValueSource,
+/// Equality of two references by the identity they resolve to, mirroring the
+/// former key's `nil`/`internal:`/`external:` encoding.
+fn ref_eq(
+    left: Ref,
+    left_source: ValueSource,
+    right: Ref,
+    right_source: ValueSource,
     identities: &IdentitySet,
     doms: &SemanticInputs<'_>,
-) -> String {
-    if referent.is_none() {
-        return "nil".to_owned();
+) -> bool {
+    match (left.is_none(), right.is_none()) {
+        (true, true) => true,
+        (false, false) => match (
+            identities.resolve_ref(left_source, left, doms),
+            identities.resolve_ref(right_source, right, doms),
+        ) {
+            // Both resolve to a merged identity: equal iff it is the same one.
+            (Some(a), Some(b)) => a == b,
+            // Both external (unresolved): equal iff the same raw referent.
+            (None, None) => left == right,
+            // One internal, one external: never equal.
+            _ => false,
+        },
+        // One nil, one not: never equal.
+        _ => false,
     }
-    match identities.resolve_ref(source, referent, doms) {
-        Some(id) => format!("internal:{id:?}"),
-        None => format!("external:{referent}"),
+}
+
+/// Equality of two `Content` values, comparing object referents by resolved
+/// identity and URIs by string.
+fn content_eq(
+    left: &ContentType,
+    left_source: ValueSource,
+    right: &ContentType,
+    right_source: ValueSource,
+    identities: &IdentitySet,
+    doms: &SemanticInputs<'_>,
+) -> bool {
+    match (left, right) {
+        (ContentType::Object(a), ContentType::Object(b)) => {
+            ref_eq(*a, left_source, *b, right_source, identities, doms)
+        }
+        (ContentType::Uri(a), ContentType::Uri(b)) => a == b,
+        (ContentType::None, ContentType::None) => true,
+        // Future `ContentType` kinds the merge does not model collapse together,
+        // matching the former key's catch-all; distinct known kinds stay unequal.
+        (a, b) => is_unknown_content(a) && is_unknown_content(b),
     }
+}
+
+fn is_unknown_content(content: &ContentType) -> bool {
+    !matches!(
+        content,
+        ContentType::Object(_) | ContentType::Uri(_) | ContentType::None
+    )
 }
 
 pub(crate) fn bytes_summary(bytes: &[u8]) -> String {

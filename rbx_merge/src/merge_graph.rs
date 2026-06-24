@@ -17,8 +17,7 @@ use crate::identity::{IdentitySet, MergeEntry, MergeNodeId};
 use crate::render::display_variant;
 use crate::resolve::{Resolutions, Side};
 use crate::semantic::{
-    NodeId, SemanticDom, SemanticInputs, SemanticInstance, ValueSource, variant_key,
-    variant_options_equal,
+    NodeId, SemanticDom, SemanticInputs, SemanticInstance, ValueSource, variant_options_equal,
 };
 
 #[derive(Debug, Clone)]
@@ -637,6 +636,22 @@ fn node_is_on_parent_cycle(graph: &MergedGraph, start: MergeNodeId) -> bool {
     false
 }
 
+/// One side's property iterator, peeked during the k-way merge in
+/// [`merge_properties`].
+type PropertyIter<'a> = std::iter::Peekable<std::collections::btree_map::Iter<'a, Ustr, Variant>>;
+
+/// Advance `side` onto `key` and yield its value there, or `None` if this side
+/// has no property `key`. Callers pass the smallest key across all sides, so a
+/// side either sits exactly on it or has not reached it yet — never past it.
+fn take_property<'a>(side: &mut Option<PropertyIter<'a>>, key: Ustr) -> Option<&'a Variant> {
+    let iter = side.as_mut()?;
+    if *iter.peek()?.0 == key {
+        iter.next().map(|(_, value)| value)
+    } else {
+        None
+    }
+}
+
 fn merge_properties(
     ctx: &MergeCtx<'_>,
     entry: &MergeEntry,
@@ -644,16 +659,29 @@ fn merge_properties(
 ) -> BTreeMap<Ustr, MergedProperty> {
     let doms = &ctx.doms;
     let nodes = ctx.nodes(entry);
-    let keys: BTreeSet<_> = [nodes.base, nodes.ours, nodes.theirs]
-        .into_iter()
-        .flatten()
-        .flat_map(|node| node.properties.keys())
-        .copied()
-        .collect();
+
+    // Walk the three sides' property maps together in sorted key order. The maps
+    // are already sorted by key, so a k-way merge visits the union of keys once,
+    // pulling each side's value as it reaches it — no per-node key set to
+    // allocate and no repeated lookups.
+    let mut base = nodes.base.map(|node| node.properties.iter().peekable());
+    let mut ours = nodes.ours.map(|node| node.properties.iter().peekable());
+    let mut theirs = nodes.theirs.map(|node| node.properties.iter().peekable());
 
     let mut merged = BTreeMap::new();
-    for key in keys {
-        let values = nodes.map(|node| node.and_then(|node| node.properties.get(&key)));
+    loop {
+        let key = [base.as_mut(), ours.as_mut(), theirs.as_mut()]
+            .into_iter()
+            .flatten()
+            .filter_map(|side| side.peek().map(|entry| *entry.0))
+            .min();
+        let Some(key) = key else { break };
+
+        let values = Sides {
+            base: take_property(&mut base, key),
+            ours: take_property(&mut ours, key),
+            theirs: take_property(&mut theirs, key),
+        };
 
         match merge_property_value(ctx, key, values) {
             PropertyMerge::Keep(property) => {
@@ -717,18 +745,28 @@ fn merge_property_value(
         return merge_attributes(ctx, values);
     }
 
-    // Reduce each side to a source-aware key (so refs to the same merged
-    // instance compare equal across sides), then apply the three-way rule with
-    // plain equality. Keys are computed once per side rather than per comparison.
-    let sourced = Sides {
-        base: (base, ValueSource::Base),
-        ours: (ours, ValueSource::Ours),
-        theirs: (theirs, ValueSource::Theirs),
+    // Apply the three-way rule with source-aware value equality (so refs to the
+    // same merged instance compare equal across sides). Comparing values directly
+    // — short-circuiting as soon as the winning side is known — avoids
+    // materializing a comparison key per side on this hot path.
+    let eq = |left: Option<&Variant>,
+              left_source: ValueSource,
+              right: Option<&Variant>,
+              right_source: ValueSource| {
+        variant_options_equal(left, left_source, right, right_source, identities, doms)
     };
-    let keys = sourced
-        .map(|(value, source)| value.map(|value| variant_key(value, source, identities, doms)));
-    if let Ok(side) = keys.three_way_side() {
-        let (value, source) = sourced.pick(side);
+    let ours_eq_base = eq(ours, ValueSource::Ours, base, ValueSource::Base);
+    let theirs_eq_base = eq(theirs, ValueSource::Theirs, base, ValueSource::Base);
+    let resolved = if ours_eq_base && theirs_eq_base {
+        Some((base, ValueSource::Base))
+    } else if ours_eq_base {
+        Some((theirs, ValueSource::Theirs))
+    } else if theirs_eq_base || eq(ours, ValueSource::Ours, theirs, ValueSource::Theirs) {
+        Some((ours, ValueSource::Ours))
+    } else {
+        None
+    };
+    if let Some((value, source)) = resolved {
         return keep_or_delete(value, source);
     }
 

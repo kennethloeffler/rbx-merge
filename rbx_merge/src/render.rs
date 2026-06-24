@@ -4,6 +4,13 @@
 //! The tree uses indentation alone to convey nesting (no repeated paths) and
 //! renders instances as `ClassName "Name"` with their properties beneath them.
 //! References are shown as Roblox-style dotted paths to their target.
+//!
+//! Rendering is allocation-bound, so values and lines are appended directly into
+//! the caller's output buffer rather than each returning its own `String`. The
+//! `*_into` functions are the primitives; [`display_variant`] is a thin
+//! `String`-returning wrapper kept for the (cold) conflict-reporting path.
+
+use std::fmt::Write as _;
 
 use rbx_types::{CFrame, ContentType, PhysicalProperties, Ref, Variant, Vector3};
 
@@ -12,177 +19,217 @@ use crate::semantic::{NodeId, SemanticDom, SemanticInputs, ValueSource, bytes_su
 
 const INDENT: &str = "  ";
 
-/// Shortest round-tripping decimal for a float, matching Rust's `{:?}` (e.g.
-/// `0.0`, `1785.8`, `-0.98338413`, `inf`, `NaN`).
-fn f32s(value: f32) -> String {
-    format!("{value:?}")
+/// Append a formatted fragment to a `String`. Writing to a `String` is
+/// infallible, so the `fmt::Result` is discarded.
+macro_rules! w {
+    ($out:expr, $($arg:tt)*) => {{
+        let _ = write!($out, $($arg)*);
+    }};
 }
 
-/// The three components of a `Vector3`, comma-separated.
-fn vec3(value: &Vector3) -> String {
-    format!("{}, {}, {}", f32s(value.x), f32s(value.y), f32s(value.z))
+/// `depth` levels of indentation, written without an intermediate `String`.
+fn push_indent(out: &mut String, depth: usize) {
+    for _ in 0..depth {
+        out.push_str(INDENT);
+    }
+}
+
+/// The three components of a `Vector3`, comma-separated, each the shortest
+/// round-tripping decimal (Rust's `{:?}`).
+fn push_vec3(out: &mut String, value: &Vector3) {
+    w!(out, "{:?}, {:?}, {:?}", value.x, value.y, value.z);
 }
 
 /// A `CFrame` as `position | rotation`, with the 3x3 orientation flattened.
-fn cframe(value: &CFrame) -> String {
+fn push_cframe(out: &mut String, value: &CFrame) {
     let m = &value.orientation;
-    format!(
-        "CFrame({} | {}, {}, {})",
-        vec3(&value.position),
-        vec3(&m.x),
-        vec3(&m.y),
-        vec3(&m.z),
-    )
+    out.push_str("CFrame(");
+    push_vec3(out, &value.position);
+    out.push_str(" | ");
+    push_vec3(out, &m.x);
+    out.push_str(", ");
+    push_vec3(out, &m.y);
+    out.push_str(", ");
+    push_vec3(out, &m.z);
+    out.push(')');
 }
 
+/// Render `value` into `out`. This is the renderer's hot primitive: every arm
+/// appends in place rather than building and returning a `String`.
+pub(crate) fn display_variant_into(
+    out: &mut String,
+    value: &Variant,
+    source: ValueSource,
+    doms: &SemanticInputs<'_>,
+) {
+    match value {
+        Variant::String(value) => w!(out, "{value:?}"),
+        Variant::Bool(value) => w!(out, "Bool({value})"),
+        Variant::Int32(value) => w!(out, "Int32({value})"),
+        Variant::Int64(value) => w!(out, "Int64({value})"),
+        Variant::Float32(value) => w!(out, "Float32({value:?})"),
+        Variant::Float64(value) => w!(out, "Float64({value:?})"),
+        Variant::Enum(value) => w!(out, "Enum({})", value.to_u32()),
+        Variant::Vector2(value) => w!(out, "Vector2({:?}, {:?})", value.x, value.y),
+        Variant::Vector2int16(value) => w!(out, "Vector2int16({}, {})", value.x, value.y),
+        Variant::Vector3(value) => {
+            out.push_str("Vector3(");
+            push_vec3(out, value);
+            out.push(')');
+        }
+        Variant::Vector3int16(value) => {
+            w!(out, "Vector3int16({}, {}, {})", value.x, value.y, value.z)
+        }
+        Variant::CFrame(value) => push_cframe(out, value),
+        Variant::OptionalCFrame(value) => match value {
+            Some(value) => {
+                out.push_str("OptionalCFrame(");
+                push_cframe(out, value);
+                out.push(')');
+            }
+            None => out.push_str("OptionalCFrame(none)"),
+        },
+        Variant::Color3(value) => {
+            w!(out, "Color3({:?}, {:?}, {:?})", value.r, value.g, value.b)
+        }
+        Variant::Color3uint8(value) => {
+            w!(out, "Color3uint8({}, {}, {})", value.r, value.g, value.b)
+        }
+        Variant::UDim(value) => w!(out, "UDim({:?}, {})", value.scale, value.offset),
+        Variant::UDim2(value) => w!(
+            out,
+            "UDim2({:?}, {}, {:?}, {})",
+            value.x.scale,
+            value.x.offset,
+            value.y.scale,
+            value.y.offset,
+        ),
+        Variant::NumberRange(value) => w!(out, "NumberRange({:?}, {:?})", value.min, value.max),
+        Variant::Rect(value) => w!(
+            out,
+            "Rect({:?}, {:?}, {:?}, {:?})",
+            value.min.x,
+            value.min.y,
+            value.max.x,
+            value.max.y,
+        ),
+        Variant::Region3(value) => {
+            out.push_str("Region3(");
+            push_vec3(out, &value.min);
+            out.push_str(" | ");
+            push_vec3(out, &value.max);
+            out.push(')');
+        }
+        Variant::Region3int16(value) => w!(
+            out,
+            "Region3int16({}, {}, {} | {}, {}, {})",
+            value.min.x,
+            value.min.y,
+            value.min.z,
+            value.max.x,
+            value.max.y,
+            value.max.z,
+        ),
+        Variant::Ray(value) => {
+            out.push_str("Ray(");
+            push_vec3(out, &value.origin);
+            out.push_str(" | ");
+            push_vec3(out, &value.direction);
+            out.push(')');
+        }
+        Variant::SecurityCapabilities(value) => w!(out, "SecurityCapabilities({})", value.bits()),
+        Variant::PhysicalProperties(value) => match value {
+            PhysicalProperties::Default => out.push_str("PhysicalProperties(Default)"),
+            PhysicalProperties::Custom(props) => w!(
+                out,
+                "PhysicalProperties({:?}, {:?}, {:?}, {:?}, {:?}, {:?})",
+                props.density(),
+                props.friction(),
+                props.elasticity(),
+                props.friction_weight(),
+                props.elasticity_weight(),
+                props.acoustic_absorption(),
+            ),
+        },
+        Variant::NumberSequence(value) => {
+            out.push_str("NumberSequence([");
+            for (i, kp) in value.keypoints.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                w!(out, "({:?}, {:?}, {:?})", kp.time, kp.value, kp.envelope);
+            }
+            out.push_str("])");
+        }
+        Variant::ColorSequence(value) => {
+            out.push_str("ColorSequence([");
+            for (i, kp) in value.keypoints.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                w!(
+                    out,
+                    "({:?}, {:?}, {:?}, {:?})",
+                    kp.time,
+                    kp.color.r,
+                    kp.color.g,
+                    kp.color.b,
+                );
+            }
+            out.push_str("])");
+        }
+        Variant::Ref(referent) => ref_display_into(out, *referent, source, doms),
+        Variant::Content(content) => match content.value() {
+            ContentType::Object(referent) => ref_display_into(out, *referent, source, doms),
+            ContentType::Uri(uri) => w!(out, "content {uri:?}"),
+            ContentType::None => out.push_str("content none"),
+            _ => out.push_str("content <unknown>"),
+        },
+        Variant::Attributes(attributes) => {
+            out.push('{');
+            for (i, (key, value)) in attributes.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(key);
+                out.push_str(": ");
+                display_variant_into(out, value, source, doms);
+            }
+            out.push('}');
+        }
+        Variant::Tags(tags) => {
+            out.push('[');
+            for (i, tag) in tags.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                w!(out, "{tag:?}");
+            }
+            out.push(']');
+        }
+        Variant::BinaryString(value) => w!(out, "BinaryString({})", bytes_summary(value.as_ref())),
+        Variant::SharedString(value) => w!(out, "SharedString({})", bytes_summary(value.data())),
+        Variant::NetAssetRef(value) => w!(out, "NetAssetRef({})", bytes_summary(value.data())),
+        other => w!(out, "{other:?}"),
+    }
+}
+
+/// Render `value` to an owned `String`. Used by conflict reporting, which needs
+/// an owned display value; the hot rendering path uses [`display_variant_into`].
 pub(crate) fn display_variant(
     value: &Variant,
     source: ValueSource,
     doms: &SemanticInputs<'_>,
 ) -> String {
-    match value {
-        Variant::String(value) => format!("{value:?}"),
-        Variant::Bool(value) => format!("Bool({value})"),
-        Variant::Int32(value) => format!("Int32({value})"),
-        Variant::Int64(value) => format!("Int64({value})"),
-        Variant::Float32(value) => format!("Float32({value:?})"),
-        Variant::Float64(value) => format!("Float64({value:?})"),
-        Variant::Enum(value) => format!("Enum({})", value.to_u32()),
-        Variant::Vector2(value) => format!("Vector2({}, {})", f32s(value.x), f32s(value.y)),
-        Variant::Vector2int16(value) => format!("Vector2int16({}, {})", value.x, value.y),
-        Variant::Vector3(value) => format!("Vector3({})", vec3(value)),
-        Variant::Vector3int16(value) => {
-            format!("Vector3int16({}, {}, {})", value.x, value.y, value.z)
-        }
-        Variant::CFrame(value) => cframe(value),
-        Variant::OptionalCFrame(value) => match value {
-            Some(value) => format!("OptionalCFrame({})", cframe(value)),
-            None => "OptionalCFrame(none)".to_owned(),
-        },
-        Variant::Color3(value) => {
-            format!(
-                "Color3({}, {}, {})",
-                f32s(value.r),
-                f32s(value.g),
-                f32s(value.b)
-            )
-        }
-        Variant::Color3uint8(value) => {
-            format!("Color3uint8({}, {}, {})", value.r, value.g, value.b)
-        }
-        Variant::UDim(value) => format!("UDim({}, {})", f32s(value.scale), value.offset),
-        Variant::UDim2(value) => format!(
-            "UDim2({}, {}, {}, {})",
-            f32s(value.x.scale),
-            value.x.offset,
-            f32s(value.y.scale),
-            value.y.offset,
-        ),
-        Variant::NumberRange(value) => {
-            format!("NumberRange({}, {})", f32s(value.min), f32s(value.max))
-        }
-        Variant::Rect(value) => format!(
-            "Rect({}, {}, {}, {})",
-            f32s(value.min.x),
-            f32s(value.min.y),
-            f32s(value.max.x),
-            f32s(value.max.y),
-        ),
-        Variant::Region3(value) => {
-            format!("Region3({} | {})", vec3(&value.min), vec3(&value.max))
-        }
-        Variant::Region3int16(value) => format!(
-            "Region3int16({}, {}, {} | {}, {}, {})",
-            value.min.x, value.min.y, value.min.z, value.max.x, value.max.y, value.max.z,
-        ),
-        Variant::Ray(value) => {
-            format!("Ray({} | {})", vec3(&value.origin), vec3(&value.direction))
-        }
-        Variant::SecurityCapabilities(value) => {
-            format!("SecurityCapabilities({})", value.bits())
-        }
-        Variant::PhysicalProperties(value) => match value {
-            PhysicalProperties::Default => "PhysicalProperties(Default)".to_owned(),
-            PhysicalProperties::Custom(props) => format!(
-                "PhysicalProperties({}, {}, {}, {}, {}, {})",
-                f32s(props.density()),
-                f32s(props.friction()),
-                f32s(props.elasticity()),
-                f32s(props.friction_weight()),
-                f32s(props.elasticity_weight()),
-                f32s(props.acoustic_absorption()),
-            ),
-        },
-        Variant::NumberSequence(value) => {
-            let keypoints = value
-                .keypoints
-                .iter()
-                .map(|kp| {
-                    format!(
-                        "({}, {}, {})",
-                        f32s(kp.time),
-                        f32s(kp.value),
-                        f32s(kp.envelope)
-                    )
-                })
-                .collect::<Vec<_>>();
-            format!("NumberSequence([{}])", keypoints.join(", "))
-        }
-        Variant::ColorSequence(value) => {
-            let keypoints = value
-                .keypoints
-                .iter()
-                .map(|kp| {
-                    format!(
-                        "({}, {}, {}, {})",
-                        f32s(kp.time),
-                        f32s(kp.color.r),
-                        f32s(kp.color.g),
-                        f32s(kp.color.b),
-                    )
-                })
-                .collect::<Vec<_>>();
-            format!("ColorSequence([{}])", keypoints.join(", "))
-        }
-        Variant::Ref(referent) => ref_display(*referent, source, doms),
-        Variant::Content(content) => match content.value() {
-            ContentType::Object(referent) => ref_display(*referent, source, doms),
-            ContentType::Uri(uri) => format!("content {uri:?}"),
-            ContentType::None => "content none".to_owned(),
-            _ => "content <unknown>".to_owned(),
-        },
-        Variant::Attributes(attributes) => {
-            let mut out = String::from("{");
-            let mut first = true;
-            for (key, value) in attributes {
-                if !first {
-                    out.push_str(", ");
-                }
-                first = false;
-                out.push_str(key);
-                out.push_str(": ");
-                out.push_str(&display_variant(value, source, doms));
-            }
-            out.push('}');
-            out
-        }
-        Variant::Tags(tags) => {
-            let values = tags
-                .iter()
-                .map(|tag| format!("{tag:?}"))
-                .collect::<Vec<_>>();
-            format!("[{}]", values.join(", "))
-        }
-        Variant::BinaryString(value) => format!("BinaryString({})", bytes_summary(value.as_ref())),
-        Variant::SharedString(value) => format!("SharedString({})", bytes_summary(value.data())),
-        Variant::NetAssetRef(value) => format!("NetAssetRef({})", bytes_summary(value.data())),
-        other => format!("{other:?}"),
-    }
+    let mut out = String::new();
+    display_variant_into(&mut out, value, source, doms);
+    out
 }
 
-fn ref_display(referent: Ref, source: ValueSource, doms: &SemanticInputs<'_>) -> String {
+fn ref_display_into(out: &mut String, referent: Ref, source: ValueSource, doms: &SemanticInputs<'_>) {
     if referent.is_none() {
-        return "→ nil".to_owned();
+        out.push_str("→ nil");
+        return;
     }
     let dom = match source {
         ValueSource::Base => Some(doms.base),
@@ -191,8 +238,11 @@ fn ref_display(referent: Ref, source: ValueSource, doms: &SemanticInputs<'_>) ->
         ValueSource::Merged => None,
     };
     match dom.and_then(|dom| dom.node_for_ref(referent).map(|node| dom.path(node))) {
-        Some(path) => format!("→ {path}"),
-        None => "→ <external>".to_owned(),
+        Some(path) => {
+            out.push_str("→ ");
+            out.push_str(&path);
+        }
+        None => out.push_str("→ <external>"),
     }
 }
 
@@ -203,7 +253,7 @@ pub(crate) fn render_textconv(dom: &SemanticDom, format: FileFormat) -> String {
         theirs: dom,
     };
     let mut out = String::new();
-    out.push_str(&format!("# rbx-merge — {format}\n"));
+    w!(&mut out, "# rbx-merge — {format}\n");
     render_node(dom, dom.root(), 0, &mut out, &doms);
     out
 }
@@ -216,37 +266,46 @@ fn render_node(
     doms: &SemanticInputs<'_>,
 ) {
     let node = dom.node(id);
-    let indent = INDENT.repeat(depth);
     if depth == 0 {
-        out.push_str(&format!("{indent}{}\n", node.class));
+        push_indent(out, depth);
+        out.push_str(node.class.as_str());
+        out.push('\n');
     } else {
         // Separate each instance from its preceding sibling or its parent's
         // properties with a blank line. Line-based diff tools anchor on these
         // separators, so added/removed instances form hunks that fall on
         // instance boundaries instead of sliding across identical property runs.
         out.push('\n');
-        out.push_str(&format!("{indent}{} {:?}\n", node.class, node.name));
+        push_indent(out, depth);
+        out.push_str(node.class.as_str());
+        out.push(' ');
+        w!(out, "{:?}", node.name);
+        out.push('\n');
     }
 
-    let field = INDENT.repeat(depth + 1);
     for (&key, value) in &node.properties {
         match value {
             Variant::Attributes(attributes) if attributes.iter().next().is_none() => {
-                out.push_str(&format!("{field}{key} = {{}}\n"));
+                push_indent(out, depth + 1);
+                w!(out, "{key} = {{}}\n");
             }
             Variant::Attributes(attributes) => {
-                out.push_str(&format!("{field}{key}\n"));
+                push_indent(out, depth + 1);
+                w!(out, "{key}\n");
                 for (attr_key, attr_value) in attributes {
-                    out.push_str(&format!(
-                        "{field}{INDENT}{attr_key} = {}\n",
-                        display_variant(attr_value, ValueSource::Base, doms)
-                    ));
+                    push_indent(out, depth + 1);
+                    out.push_str(INDENT);
+                    w!(out, "{attr_key} = ");
+                    display_variant_into(out, attr_value, ValueSource::Base, doms);
+                    out.push('\n');
                 }
             }
-            _ => out.push_str(&format!(
-                "{field}{key} = {}\n",
-                display_variant(value, ValueSource::Base, doms)
-            )),
+            _ => {
+                push_indent(out, depth + 1);
+                w!(out, "{key} = ");
+                display_variant_into(out, value, ValueSource::Base, doms);
+                out.push('\n');
+            }
         }
     }
 

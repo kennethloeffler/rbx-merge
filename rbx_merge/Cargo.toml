@@ -25,3 +25,7 @@ proptest.workspace = true
 [[bench]]
 name = "merge"
 harness = false
+
+[[bench]]
+name = "textconv"
+harness = false

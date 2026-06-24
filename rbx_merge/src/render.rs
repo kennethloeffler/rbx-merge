@@ -11,11 +11,14 @@
 //! `String`-returning wrapper kept for the (cold) conflict-reporting path.
 
 use std::fmt::Write as _;
+use std::io;
 
 use rbx_types::{CFrame, ContentType, PhysicalProperties, Ref, Variant, Vector3};
 
 use crate::format::FileFormat;
-use crate::semantic::{NodeId, SemanticDom, SemanticInputs, ValueSource, bytes_summary};
+use crate::semantic::{
+    NodeId, SemanticDom, SemanticInputs, SemanticInstance, ValueSource, bytes_summary,
+};
 
 const INDENT: &str = "  ";
 
@@ -258,14 +261,35 @@ pub(crate) fn render_textconv(dom: &SemanticDom, format: FileFormat) -> String {
     out
 }
 
-fn render_node(
+/// Stream the textconv tree into `out` instead of building it all in memory.
+/// Each node's lines are rendered into a single reused buffer and flushed, so
+/// peak memory is one node's text plus the writer's buffer rather than the whole
+/// (potentially enormous) tree. The byte stream is identical to
+/// [`render_textconv`]'s string, node for node.
+pub(crate) fn stream_textconv<W: io::Write>(
     dom: &SemanticDom,
-    id: NodeId,
+    format: FileFormat,
+    out: &mut W,
+) -> io::Result<()> {
+    let doms = SemanticInputs {
+        base: dom,
+        ours: dom,
+        theirs: dom,
+    };
+    let mut buf = String::new();
+    w!(&mut buf, "# rbx-merge — {format}\n");
+    out.write_all(buf.as_bytes())?;
+    stream_node(dom, dom.root(), 0, out, &doms, &mut buf)
+}
+
+/// Render `node`'s own lines — its header and property lines, but not its
+/// descendants — appending to `out`. Shared by the buffered and streaming walks.
+fn render_node_lines(
+    node: &SemanticInstance,
     depth: usize,
     out: &mut String,
     doms: &SemanticInputs<'_>,
 ) {
-    let node = dom.node(id);
     if depth == 0 {
         push_indent(out, depth);
         out.push_str(node.class.as_str());
@@ -308,8 +332,35 @@ fn render_node(
             }
         }
     }
+}
 
-    for &child in &node.children {
+fn render_node(
+    dom: &SemanticDom,
+    id: NodeId,
+    depth: usize,
+    out: &mut String,
+    doms: &SemanticInputs<'_>,
+) {
+    render_node_lines(dom.node(id), depth, out, doms);
+    for &child in &dom.node(id).children {
         render_node(dom, child, depth + 1, out, doms);
     }
+}
+
+fn stream_node<W: io::Write>(
+    dom: &SemanticDom,
+    id: NodeId,
+    depth: usize,
+    out: &mut W,
+    doms: &SemanticInputs<'_>,
+    buf: &mut String,
+) -> io::Result<()> {
+    let node = dom.node(id);
+    buf.clear();
+    render_node_lines(node, depth, buf, doms);
+    out.write_all(buf.as_bytes())?;
+    for &child in &node.children {
+        stream_node(dom, child, depth + 1, out, doms, buf)?;
+    }
+    Ok(())
 }

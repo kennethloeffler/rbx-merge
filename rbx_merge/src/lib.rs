@@ -33,6 +33,7 @@ mod render;
 mod resolve;
 mod semantic;
 
+use std::io;
 use std::path::Path;
 
 use thiserror::Error;
@@ -40,7 +41,7 @@ use thiserror::Error;
 use crate::format::{decode_file, encode_file};
 use crate::identity::build_identities;
 use crate::merge_graph::{MergeOutcome, merge};
-use crate::render::render_textconv;
+use crate::render::{render_textconv, stream_textconv};
 use crate::semantic::{SemanticDom, SemanticInputs};
 
 pub use crate::conflict::{
@@ -107,12 +108,40 @@ pub enum Error {
 
     #[error("{0}")]
     Internal(String),
+
+    #[error("io error: {0}")]
+    Io(#[from] io::Error),
 }
 
-pub fn textconv(bytes: &[u8], path_hint: Option<&Path>) -> Result<String, Error> {
+/// Decode `bytes` into the semantic model the textconv renderers consume.
+fn textconv_semantic(
+    bytes: &[u8],
+    path_hint: Option<&Path>,
+) -> Result<(SemanticDom, FileFormat), Error> {
     let decoded = decode_file(bytes, path_hint, None)?;
     let semantic = SemanticDom::from_weak_dom(&decoded.dom)?;
-    Ok(render_textconv(&semantic, decoded.format))
+    Ok((semantic, decoded.format))
+}
+
+/// Render the deterministic textconv tree to an owned `String`.
+pub fn textconv(bytes: &[u8], path_hint: Option<&Path>) -> Result<String, Error> {
+    let (semantic, format) = textconv_semantic(bytes, path_hint)?;
+    Ok(render_textconv(&semantic, format))
+}
+
+/// Stream the deterministic textconv tree into `out`. Equivalent to writing
+/// [`textconv`]'s string, but without materializing the whole tree in memory —
+/// the renderer flushes node by node — so it stays flat in memory on files whose
+/// text runs to millions of lines. Pass a buffered writer (e.g. `BufWriter`) to
+/// coalesce the per-node writes.
+pub fn textconv_to<W: io::Write>(
+    bytes: &[u8],
+    path_hint: Option<&Path>,
+    out: &mut W,
+) -> Result<(), Error> {
+    let (semantic, format) = textconv_semantic(bytes, path_hint)?;
+    stream_textconv(&semantic, format, out)?;
+    Ok(())
 }
 
 /// Three-way merge over side-specific [`FileInput`]s, returning a full

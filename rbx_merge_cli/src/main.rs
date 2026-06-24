@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -7,7 +8,8 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use rbx_merge::{
-    Conflict, Diagnostic, FileInput, MergeSettings, Resolutions, Side, merge_files, textconv,
+    Conflict, Diagnostic, Error as MergeError, FileInput, MergeSettings, Resolutions, Side,
+    merge_files, textconv_to,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -98,9 +100,10 @@ fn run() -> Result<ExitCode> {
         Command::Textconv { path } => {
             let bytes =
                 fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
-            let output = textconv(&bytes, Some(&path))?;
-            print!("{output}");
-            Ok(ExitCode::SUCCESS)
+            let stdout = io::stdout();
+            let mut out = BufWriter::new(stdout.lock());
+            let result = textconv_to(&bytes, Some(&path), &mut out);
+            finish_stream(result, &mut out)
         }
         Command::Merge {
             base,
@@ -197,17 +200,41 @@ fn run() -> Result<ExitCode> {
                 fs::read(&old).with_context(|| format!("failed to read {}", old.display()))?;
             let new_bytes =
                 fs::read(&new).with_context(|| format!("failed to read {}", new.display()))?;
-            let old_text = textconv(&old_bytes, Some(&old))?;
-            let new_text = textconv(&new_bytes, Some(&new))?;
-            println!("--- {}", old.display());
-            print!("{old_text}");
-            if !old_text.ends_with('\n') {
-                println!();
-            }
-            println!("+++ {}", new.display());
-            print!("{new_text}");
+            let stdout = io::stdout();
+            let mut out = BufWriter::new(stdout.lock());
+            let result = write_diff(&mut out, &old, &old_bytes, &new, &new_bytes);
+            finish_stream(result, &mut out)
+        }
+    }
+}
+
+/// Stream a two-sided semantic diff (`textconv` of each side, with file headers).
+/// The textconv output always ends in a newline, so the `+++` header lands on its
+/// own line without an extra separator.
+fn write_diff<W: Write>(
+    out: &mut W,
+    old: &Path,
+    old_bytes: &[u8],
+    new: &Path,
+    new_bytes: &[u8],
+) -> Result<(), MergeError> {
+    writeln!(out, "--- {}", old.display())?;
+    textconv_to(old_bytes, Some(old), out)?;
+    writeln!(out, "+++ {}", new.display())?;
+    textconv_to(new_bytes, Some(new), out)?;
+    Ok(())
+}
+
+/// Flush a streamed command and turn the outcome into an exit code. A reader that
+/// closed the pipe early — a pager, `head`, or Git itself — is not a failure;
+/// stop quietly as conventional Unix filters do rather than reporting an error.
+fn finish_stream<W: Write>(result: Result<(), MergeError>, out: &mut W) -> Result<ExitCode> {
+    match result.and_then(|()| out.flush().map_err(MergeError::from)) {
+        Ok(()) => Ok(ExitCode::SUCCESS),
+        Err(MergeError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe => {
             Ok(ExitCode::SUCCESS)
         }
+        Err(error) => Err(error.into()),
     }
 }
 

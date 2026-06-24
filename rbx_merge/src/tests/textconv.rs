@@ -1,7 +1,27 @@
 use anyhow::Result;
 
 use super::common;
-use crate::textconv;
+use crate::{textconv, textconv_to};
+
+/// The streaming renderer must produce exactly the bytes the buffered one does,
+/// for every value type and tree shape in the corpus — it is the same output,
+/// just flushed node by node.
+#[test]
+fn streaming_matches_buffered() -> Result<()> {
+    for path in common::all_fixture_paths() {
+        let bytes = common::read_fixture(&path)?;
+        let buffered = textconv(&bytes, Some(&path))?;
+        let mut streamed = Vec::new();
+        textconv_to(&bytes, Some(&path), &mut streamed)?;
+        assert_eq!(
+            buffered.as_bytes(),
+            streamed.as_slice(),
+            "streamed output diverged for {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
 
 #[test]
 fn textconv_snapshots_xml_model() -> Result<()> {

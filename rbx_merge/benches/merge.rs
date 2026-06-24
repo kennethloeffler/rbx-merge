@@ -179,7 +179,9 @@ fn merge_three(base: &[u8], ours: &[u8], theirs: &[u8]) {
 
 fn bench_identical(c: &mut Criterion) {
     let mut group = c.benchmark_group("merge/identical");
-    group.sample_size(10).measurement_time(Duration::from_secs(3));
+    group
+        .sample_size(10)
+        .measurement_time(Duration::from_secs(3));
     for &n in &[1_000usize, 5_000, 20_000] {
         let bytes = build(n, 8);
         group.throughput(Throughput::Elements(n as u64));
@@ -192,7 +194,9 @@ fn bench_identical(c: &mut Criterion) {
 
 fn bench_additions(c: &mut Criterion) {
     let mut group = c.benchmark_group("merge/additions");
-    group.sample_size(10).measurement_time(Duration::from_secs(3));
+    group
+        .sample_size(10)
+        .measurement_time(Duration::from_secs(3));
     let base = build(5_000, 8);
     for &adds in &[500usize, 1_000, 2_000, 4_000] {
         let ours = with_additions(&base, adds, "ours");
@@ -211,7 +215,9 @@ fn bench_additions(c: &mut Criterion) {
 
 fn bench_properties(c: &mut Criterion) {
     let mut group = c.benchmark_group("merge/properties");
-    group.sample_size(10).measurement_time(Duration::from_secs(3));
+    group
+        .sample_size(10)
+        .measurement_time(Duration::from_secs(3));
     let n = 5_000usize;
     for &props in &[1usize, 2, 4, 8] {
         let bytes = build_parts(n, 8, props);
@@ -227,7 +233,9 @@ fn bench_properties(c: &mut Criterion) {
 
 fn bench_property_edits(c: &mut Criterion) {
     let mut group = c.benchmark_group("merge/property_edits");
-    group.sample_size(10).measurement_time(Duration::from_secs(3));
+    group
+        .sample_size(10)
+        .measurement_time(Duration::from_secs(3));
     // Six properties so both edited keys (`Transparency`, `Reflectance`) start
     // present on the base and the edits are modifications, not additions.
     let base = build_parts(5_000, 8, 6);
@@ -248,7 +256,9 @@ fn bench_property_edits(c: &mut Criterion) {
 
 fn bench_attributes(c: &mut Criterion) {
     let mut group = c.benchmark_group("merge/attributes");
-    group.sample_size(10).measurement_time(Duration::from_secs(3));
+    group
+        .sample_size(10)
+        .measurement_time(Duration::from_secs(3));
     let n = 5_000usize;
     for &attrs in &[1usize, 4, 8, 16] {
         let bytes = build_attributed(n, 8, attrs);

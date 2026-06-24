@@ -193,9 +193,14 @@ pub(crate) fn variant_eq(
         (Variant::Ref(a), Variant::Ref(b)) => {
             ref_eq(*a, left_source, *b, right_source, identities, doms)
         }
-        (Variant::Content(a), Variant::Content(b)) => {
-            content_eq(a.value(), left_source, b.value(), right_source, identities, doms)
-        }
+        (Variant::Content(a), Variant::Content(b)) => content_eq(
+            a.value(),
+            left_source,
+            b.value(),
+            right_source,
+            identities,
+            doms,
+        ),
         // Attributes can nest references, so recurse with source awareness. Both
         // maps iterate in sorted key order (they are `BTreeMap`-backed), so equal
         // length plus a positional compare settles equality.

@@ -230,7 +230,12 @@ pub(crate) fn display_variant(
     out
 }
 
-fn ref_display_into(out: &mut String, referent: Ref, source: ValueSource, doms: &SemanticInputs<'_>) {
+fn ref_display_into(
+    out: &mut String,
+    referent: Ref,
+    source: ValueSource,
+    doms: &SemanticInputs<'_>,
+) {
     if referent.is_none() {
         out.push_str("→ nil");
         return;

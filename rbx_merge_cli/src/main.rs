@@ -8,8 +8,8 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use rbx_merge::{
-    merge_files, textconv_to, Conflict, Diagnostic, Error as MergeError, FileInput, MergeSettings,
-    Resolutions, Side, TextconvOptions,
+    Conflict, Diagnostic, Error as MergeError, FileInput, MergeSettings, Resolutions, Side,
+    TextconvOptions, merge_files, textconv_to,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

@@ -94,7 +94,9 @@ fn render(bytes: &[u8]) {
 
 fn bench_instances(c: &mut Criterion) {
     let mut group = c.benchmark_group("textconv/instances");
-    group.sample_size(10).measurement_time(Duration::from_secs(3));
+    group
+        .sample_size(10)
+        .measurement_time(Duration::from_secs(3));
     for &n in &[1_000usize, 5_000, 20_000] {
         let bytes = build_with(n, 8, |i| {
             InstanceBuilder::new("Folder").with_name(format!("F{i}"))
@@ -109,7 +111,9 @@ fn bench_instances(c: &mut Criterion) {
 
 fn bench_properties(c: &mut Criterion) {
     let mut group = c.benchmark_group("textconv/properties");
-    group.sample_size(10).measurement_time(Duration::from_secs(3));
+    group
+        .sample_size(10)
+        .measurement_time(Duration::from_secs(3));
     let n = 5_000usize;
     for &props in &[1usize, 2, 4, 8] {
         let bytes = build_with(n, 8, |i| {
@@ -129,7 +133,9 @@ fn bench_properties(c: &mut Criterion) {
 
 fn bench_attributes(c: &mut Criterion) {
     let mut group = c.benchmark_group("textconv/attributes");
-    group.sample_size(10).measurement_time(Duration::from_secs(3));
+    group
+        .sample_size(10)
+        .measurement_time(Duration::from_secs(3));
     let n = 5_000usize;
     for &attrs in &[1usize, 4, 8, 16] {
         let bytes = build_with(n, 8, |i| {

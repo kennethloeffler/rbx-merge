@@ -123,11 +123,13 @@ pub(crate) fn build_identities(
         identities.insert(None, Some(ours_id), None);
     }
 
+    let mut added_index = AddedIndex::build(&identities, ours);
+    let mut consumed = HashSet::new();
     for theirs_id in theirs.node_ids() {
         if identities.theirs_to_merge.contains_key(&theirs_id) {
             continue;
         }
-        match find_added_match(&identities, ours, theirs, theirs_id) {
+        match added_index.find_match(&identities, theirs, theirs_id, &mut consumed) {
             AddedMatch::Unique(candidate) => identities.set_theirs(candidate, theirs_id),
             AddedMatch::Ambiguous => {
                 diagnostics.push(ambiguous_identity_diagnostic(theirs.path(theirs_id)));
@@ -505,59 +507,97 @@ fn unmatched_by_class(
     grouped
 }
 
-fn find_added_match(
-    identities: &IdentitySet,
-    ours: &SemanticDom,
-    theirs: &SemanticDom,
-    theirs_id: NodeId,
-) -> AddedMatch {
-    let theirs_node = theirs.node(theirs_id);
-    let theirs_parent = theirs_node
-        .parent
-        .and_then(|parent| identities.theirs_to_merge.get(&parent).copied());
+/// Index over the `ours`-only additions (instances `ours` added that have no
+/// base and no matched `theirs`), so pairing each `theirs` addition against them
+/// is a hash lookup rather than a scan of every merge identity. Without it,
+/// matching `M` additions on each side is O(M * N) over the identity set.
+///
+/// Both indexes are keyed exactly as the former linear scan filtered: by
+/// `UniqueId` for the exact-pairing fast path, and by (parent merge id, class,
+/// name) for the structural heuristic. Candidates are consumed as they are
+/// claimed (see `find_match`), so each `ours` addition pairs with at most one
+/// `theirs` addition.
+struct AddedIndex {
+    by_unique_id: HashMap<UniqueId, Vec<MergeNodeId>>,
+    by_key: HashMap<(Option<MergeNodeId>, Ustr, String), Vec<MergeNodeId>>,
+}
 
-    // A shared UniqueId is an exact, intentional pairing: trust it even when the
-    // name/class/parent heuristic below would be ambiguous.
-    let unique_id = theirs.unique_id(theirs_id);
-    if let Some(unique_id) = unique_id {
-        let mut matches = identities.entries.iter().filter_map(|(merge_id, entry)| {
-            let ours_id = entry.ours?;
-            if entry.base.is_none()
-                && entry.theirs.is_none()
-                && ours.unique_id(ours_id) == Some(unique_id)
-            {
-                Some(*merge_id)
-            } else {
-                None
+impl AddedIndex {
+    fn build(identities: &IdentitySet, ours: &SemanticDom) -> Self {
+        let mut by_unique_id: HashMap<UniqueId, Vec<MergeNodeId>> = HashMap::new();
+        let mut by_key: HashMap<(Option<MergeNodeId>, Ustr, String), Vec<MergeNodeId>> =
+            HashMap::new();
+        for (merge_id, entry) in identities.entries() {
+            // Only `ours`-only additions are candidates, mirroring the former
+            // scan's `entry.base.is_none() && entry.theirs.is_none()` filter.
+            if entry.base.is_some() || entry.theirs.is_some() {
+                continue;
             }
-        });
-
-        if let (Some(only), None) = (matches.next(), matches.next()) {
-            return AddedMatch::Unique(only);
+            let Some(ours_id) = entry.ours else {
+                continue;
+            };
+            let ours_node = ours.node(ours_id);
+            let ours_parent = ours_node
+                .parent
+                .and_then(|parent| identities.lookup(ValueSource::Ours, parent));
+            by_key
+                .entry((ours_parent, ours_node.class, ours_node.name.clone()))
+                .or_default()
+                .push(merge_id);
+            if let Some(unique_id) = ours.unique_id(ours_id) {
+                by_unique_id.entry(unique_id).or_default().push(merge_id);
+            }
+        }
+        Self {
+            by_unique_id,
+            by_key,
         }
     }
 
-    let mut matches = identities.entries.iter().filter_map(|(merge_id, entry)| {
-        let ours_id = entry.ours?;
-        let ours_node = ours.node(ours_id);
-        let ours_parent = ours_node
+    /// Find the `ours`-only addition a `theirs` addition pairs with, claiming it
+    /// so no later `theirs` node reuses it. `consumed` is shared across both
+    /// indexes; lookups drop already-claimed candidates so each list stays the
+    /// set of still-available matches.
+    fn find_match(
+        &mut self,
+        identities: &IdentitySet,
+        theirs: &SemanticDom,
+        theirs_id: NodeId,
+        consumed: &mut HashSet<MergeNodeId>,
+    ) -> AddedMatch {
+        let theirs_node = theirs.node(theirs_id);
+        let theirs_parent = theirs_node
             .parent
-            .and_then(|parent| identities.ours_to_merge.get(&parent).copied());
-        if entry.base.is_none()
-            && entry.theirs.is_none()
-            && ours_parent == theirs_parent
-            && ours_node.class == theirs_node.class
-            && ours_node.name == theirs_node.name
-        {
-            Some(*merge_id)
-        } else {
-            None
-        }
-    });
+            .and_then(|parent| identities.theirs_to_merge.get(&parent).copied());
 
-    match (matches.next(), matches.next()) {
-        (Some(first), None) => AddedMatch::Unique(first),
-        (Some(_), Some(_)) => AddedMatch::Ambiguous,
-        _ => AddedMatch::None,
+        // A shared UniqueId is an exact, intentional pairing: trust it even when
+        // the name/class/parent heuristic below would be ambiguous. Only a single
+        // surviving candidate is decisive; 0 or 2+ fall through to the heuristic,
+        // exactly as the former scan did.
+        if let Some(unique_id) = theirs.unique_id(theirs_id)
+            && let Some(candidates) = self.by_unique_id.get_mut(&unique_id)
+        {
+            candidates.retain(|id| !consumed.contains(id));
+            if candidates.len() == 1 {
+                let only = candidates[0];
+                consumed.insert(only);
+                return AddedMatch::Unique(only);
+            }
+        }
+
+        let key = (theirs_parent, theirs_node.class, theirs_node.name.clone());
+        let Some(candidates) = self.by_key.get_mut(&key) else {
+            return AddedMatch::None;
+        };
+        candidates.retain(|id| !consumed.contains(id));
+        match candidates.as_slice() {
+            [] => AddedMatch::None,
+            [only] => {
+                let only = *only;
+                consumed.insert(only);
+                AddedMatch::Unique(only)
+            }
+            _ => AddedMatch::Ambiguous,
+        }
     }
 }

@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rbx_dom_weak::{InstanceBuilder, WeakDom};
-use rbx_merge::textconv;
+use rbx_merge::{TextconvOptions, textconv};
 use rbx_types::{CFrame, Color3, Matrix3, Variant, Vector3};
 
 /// Build a binary-encoded tree of `n` instances, each parent given `fanout`
@@ -87,7 +87,9 @@ fn encode(dom: &WeakDom) -> Vec<u8> {
 }
 
 fn render(bytes: &[u8]) {
-    textconv(bytes, None).expect("textconv should succeed");
+    // Benchmark the default, diff-oriented path (filtering on) — what the Git
+    // textconv driver actually runs.
+    textconv(bytes, None, TextconvOptions::default()).expect("textconv should succeed");
 }
 
 fn bench_instances(c: &mut Criterion) {

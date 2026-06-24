@@ -10,7 +10,7 @@ use rbx_dom_weak::{InstanceBuilder, WeakDom, ustr};
 use rbx_types::{Attributes, CFrame, Color3, Matrix3, Ref, UniqueId, Variant, Vector3};
 
 use super::common;
-use crate::{FileInput, MergeSettings, Resolutions, Side, merge_files, textconv};
+use crate::{FileInput, MergeSettings, Resolutions, Side, TextconvOptions, merge_files, textconv};
 
 /// A single randomized edit. Instances are addressed by index into the current
 /// descendant list (taken modulo its length), so an edit always targets some
@@ -496,7 +496,11 @@ fn seed_base(base: &[u8], path: &Path) -> Vec<u8> {
 }
 
 fn semantic_text(bytes: &[u8], path: &Path) -> String {
-    let text = textconv(bytes, Some(path)).expect("textconv");
+    // Render every property: an invariant about the merge must see the full
+    // result, not the diff-oriented filtered view, so determinism and stability
+    // are checked over each property and stay independent of the reflection
+    // database's default values.
+    let text = textconv(bytes, Some(path), TextconvOptions::all()).expect("textconv");
     canonicalize_volatile_unique_ids(&text)
 }
 

@@ -15,6 +15,7 @@ use std::io;
 
 use rbx_types::{CFrame, ContentType, PhysicalProperties, Ref, Variant, Vector3};
 
+use crate::TextconvOptions;
 use crate::format::FileFormat;
 use crate::semantic::{
     NodeId, SemanticDom, SemanticInputs, SemanticInstance, ValueSource, bytes_summary,
@@ -249,7 +250,11 @@ fn ref_display_into(out: &mut String, referent: Ref, source: ValueSource, doms: 
     }
 }
 
-pub(crate) fn render_textconv(dom: &SemanticDom, format: FileFormat) -> String {
+pub(crate) fn render_textconv(
+    dom: &SemanticDom,
+    format: FileFormat,
+    options: TextconvOptions,
+) -> String {
     let doms = SemanticInputs {
         base: dom,
         ours: dom,
@@ -257,7 +262,7 @@ pub(crate) fn render_textconv(dom: &SemanticDom, format: FileFormat) -> String {
     };
     let mut out = String::new();
     w!(&mut out, "# rbx-merge — {format}\n");
-    render_node(dom, dom.root(), 0, &mut out, &doms);
+    render_node(dom, dom.root(), 0, &mut out, &doms, options);
     out
 }
 
@@ -270,6 +275,7 @@ pub(crate) fn stream_textconv<W: io::Write>(
     dom: &SemanticDom,
     format: FileFormat,
     out: &mut W,
+    options: TextconvOptions,
 ) -> io::Result<()> {
     let doms = SemanticInputs {
         base: dom,
@@ -279,7 +285,40 @@ pub(crate) fn stream_textconv<W: io::Write>(
     let mut buf = String::new();
     w!(&mut buf, "# rbx-merge — {format}\n");
     out.write_all(buf.as_bytes())?;
-    stream_node(dom, dom.root(), 0, out, &doms, &mut buf)
+    stream_node(dom, dom.root(), 0, out, &doms, &mut buf, options)
+}
+
+/// Whether a property line is noise to omit from the textconv tree, keeping
+/// diffs small and stable. Two kinds are dropped:
+/// - `UniqueId`: volatile identity metadata that is generally not useful for
+///   rendered output.
+/// - properties left at their class default: they carry no information and make
+///   up the bulk of a typical instance's property set.
+///
+/// A property edited *to* or *from* its default still shows in a diff — the line
+/// appears or disappears — so suppressing defaults loses no real change.
+fn is_noise_property(class: &str, key: &str, value: &Variant) -> bool {
+    key == "UniqueId" || is_default_value(class, key, value)
+}
+
+/// Whether `value` equals the reflection database's default for `class`'s `key`,
+/// walking the superclass chain so an inherited default still counts. Unknown
+/// classes or properties have no default to match, so they are never suppressed.
+fn is_default_value(class: &str, key: &str, value: &Variant) -> bool {
+    let Ok(database) = rbx_reflection_database::get() else {
+        return false;
+    };
+    let mut current = Some(class);
+    while let Some(class_name) = current {
+        let Some(descriptor) = database.classes.get(class_name) else {
+            return false;
+        };
+        if let Some(default) = descriptor.default_properties.get(key) {
+            return value == default;
+        }
+        current = descriptor.superclass;
+    }
+    false
 }
 
 /// Render `node`'s own lines — its header and property lines, but not its
@@ -289,6 +328,7 @@ fn render_node_lines(
     depth: usize,
     out: &mut String,
     doms: &SemanticInputs<'_>,
+    options: TextconvOptions,
 ) {
     if depth == 0 {
         push_indent(out, depth);
@@ -308,6 +348,9 @@ fn render_node_lines(
     }
 
     for (&key, value) in &node.properties {
+        if !options.all_properties && is_noise_property(node.class.as_str(), key.as_str(), value) {
+            continue;
+        }
         match value {
             Variant::Attributes(attributes) if attributes.iter().next().is_none() => {
                 push_indent(out, depth + 1);
@@ -340,10 +383,11 @@ fn render_node(
     depth: usize,
     out: &mut String,
     doms: &SemanticInputs<'_>,
+    options: TextconvOptions,
 ) {
-    render_node_lines(dom.node(id), depth, out, doms);
+    render_node_lines(dom.node(id), depth, out, doms, options);
     for &child in &dom.node(id).children {
-        render_node(dom, child, depth + 1, out, doms);
+        render_node(dom, child, depth + 1, out, doms, options);
     }
 }
 
@@ -354,13 +398,14 @@ fn stream_node<W: io::Write>(
     out: &mut W,
     doms: &SemanticInputs<'_>,
     buf: &mut String,
+    options: TextconvOptions,
 ) -> io::Result<()> {
     let node = dom.node(id);
     buf.clear();
-    render_node_lines(node, depth, buf, doms);
+    render_node_lines(node, depth, buf, doms, options);
     out.write_all(buf.as_bytes())?;
     for &child in &node.children {
-        stream_node(dom, child, depth + 1, out, doms, buf)?;
+        stream_node(dom, child, depth + 1, out, doms, buf, options)?;
     }
     Ok(())
 }

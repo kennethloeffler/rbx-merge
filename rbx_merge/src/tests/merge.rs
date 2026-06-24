@@ -3,7 +3,10 @@ use rbx_dom_weak::{InstanceBuilder, ustr};
 use rbx_types::{UniqueId, Variant};
 
 use super::common;
-use crate::{ConflictKind, DiagnosticSeverity, FileInput, MergeSettings, merge_files, textconv};
+use crate::{
+    ConflictKind, DiagnosticSeverity, FileInput, MergeSettings, TextconvOptions, merge_files,
+    textconv,
+};
 
 #[test]
 fn clean_one_sided_property_edit_snapshots_output() -> Result<()> {
@@ -25,7 +28,7 @@ fn clean_one_sided_property_edit_snapshots_output() -> Result<()> {
     );
     insta::assert_snapshot!(
         "clean_one_sided_property_edit_textconv",
-        textconv(&merged, Some(&path))?
+        textconv(&merged, Some(&path), TextconvOptions::all())?
     );
     Ok(())
 }
@@ -125,7 +128,7 @@ fn clean_one_sided_add_snapshots_output() -> Result<()> {
     );
     insta::assert_snapshot!(
         "clean_one_sided_add_textconv",
-        textconv(&merged, Some(&path))?
+        textconv(&merged, Some(&path), TextconvOptions::all())?
     );
     Ok(())
 }

@@ -1,6 +1,6 @@
 ---
 source: rbx_merge/src/tests/merge.rs
-expression: "textconv(&merged, Some(&path))?"
+expression: "textconv(&merged, Some(&path), TextconvOptions::all())?"
 ---
 # rbx-merge — XML model (.rbxmx)
 DataModel

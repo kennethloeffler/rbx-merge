@@ -8,8 +8,8 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use rbx_merge::{
-    Conflict, Diagnostic, Error as MergeError, FileInput, MergeSettings, Resolutions, Side,
-    merge_files, textconv_to,
+    merge_files, textconv_to, Conflict, Diagnostic, Error as MergeError, FileInput, MergeSettings,
+    Resolutions, Side, TextconvOptions,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -41,6 +41,10 @@ struct Cli {
 enum Command {
     Textconv {
         path: PathBuf,
+        /// Render every property, including those at their class default and the
+        /// volatile UniqueId. By default these are omitted to keep diffs small.
+        #[arg(long)]
+        all_properties: bool,
     },
     Merge {
         #[arg(long)]
@@ -79,6 +83,10 @@ enum Command {
     Diff {
         old: PathBuf,
         new: PathBuf,
+        /// Render every property, including those at their class default and
+        /// UniqueId. By default these are omitted to keep diffs small.
+        #[arg(long)]
+        all_properties: bool,
     },
 }
 
@@ -97,12 +105,16 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Textconv { path } => {
+        Command::Textconv {
+            path,
+            all_properties,
+        } => {
             let bytes =
                 fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+            let options = TextconvOptions { all_properties };
             let stdout = io::stdout();
             let mut out = BufWriter::new(stdout.lock());
-            let result = textconv_to(&bytes, Some(&path), &mut out);
+            let result = textconv_to(&bytes, Some(&path), &mut out, options);
             finish_stream(result, &mut out)
         }
         Command::Merge {
@@ -195,14 +207,19 @@ fn run() -> Result<ExitCode> {
             }
         }
         Command::Resolve { stash_dir, out } => run_resolve(&stash_dir, &out),
-        Command::Diff { old, new } => {
+        Command::Diff {
+            old,
+            new,
+            all_properties,
+        } => {
             let old_bytes =
                 fs::read(&old).with_context(|| format!("failed to read {}", old.display()))?;
             let new_bytes =
                 fs::read(&new).with_context(|| format!("failed to read {}", new.display()))?;
+            let options = TextconvOptions { all_properties };
             let stdout = io::stdout();
             let mut out = BufWriter::new(stdout.lock());
-            let result = write_diff(&mut out, &old, &old_bytes, &new, &new_bytes);
+            let result = write_diff(&mut out, &old, &old_bytes, &new, &new_bytes, options);
             finish_stream(result, &mut out)
         }
     }
@@ -217,11 +234,12 @@ fn write_diff<W: Write>(
     old_bytes: &[u8],
     new: &Path,
     new_bytes: &[u8],
+    options: TextconvOptions,
 ) -> Result<(), MergeError> {
     writeln!(out, "--- {}", old.display())?;
-    textconv_to(old_bytes, Some(old), out)?;
+    textconv_to(old_bytes, Some(old), out, options)?;
     writeln!(out, "+++ {}", new.display())?;
-    textconv_to(new_bytes, Some(new), out)?;
+    textconv_to(new_bytes, Some(new), out, options)?;
     Ok(())
 }
 

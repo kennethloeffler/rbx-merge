@@ -113,6 +113,24 @@ pub enum Error {
     Io(#[from] io::Error),
 }
 
+/// Options controlling textconv rendering.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TextconvOptions {
+    /// Render every property, including those left at their class default and the
+    /// volatile `UniqueId`. These are omitted by default to keep diffs small and
+    /// stable across re-saves; set this for a complete dump.
+    pub all_properties: bool,
+}
+
+impl TextconvOptions {
+    /// Options that render every property, omitting nothing.
+    pub fn all() -> Self {
+        Self {
+            all_properties: true,
+        }
+    }
+}
+
 /// Decode `bytes` into the semantic model the textconv renderers consume.
 fn textconv_semantic(
     bytes: &[u8],
@@ -123,24 +141,33 @@ fn textconv_semantic(
     Ok((semantic, decoded.format))
 }
 
-/// Render the deterministic textconv tree to an owned `String`.
-pub fn textconv(bytes: &[u8], path_hint: Option<&Path>) -> Result<String, Error> {
+/// Render the deterministic textconv tree to an owned `String`. `options`
+/// controls property filtering (see [`TextconvOptions`]); by default, properties
+/// left at their class default and the volatile `UniqueId` are omitted to keep
+/// diffs small and stable across re-saves.
+pub fn textconv(
+    bytes: &[u8],
+    path_hint: Option<&Path>,
+    options: TextconvOptions,
+) -> Result<String, Error> {
     let (semantic, format) = textconv_semantic(bytes, path_hint)?;
-    Ok(render_textconv(&semantic, format))
+    Ok(render_textconv(&semantic, format, options))
 }
 
 /// Stream the deterministic textconv tree into `out`. Equivalent to writing
 /// [`textconv`]'s string, but without materializing the whole tree in memory —
 /// the renderer flushes node by node — so it stays flat in memory on files whose
 /// text runs to millions of lines. Pass a buffered writer (e.g. `BufWriter`) to
-/// coalesce the per-node writes.
+/// coalesce the per-node writes. `options` controls property filtering (see
+/// [`TextconvOptions`]).
 pub fn textconv_to<W: io::Write>(
     bytes: &[u8],
     path_hint: Option<&Path>,
     out: &mut W,
+    options: TextconvOptions,
 ) -> Result<(), Error> {
     let (semantic, format) = textconv_semantic(bytes, path_hint)?;
-    stream_textconv(&semantic, format, out)?;
+    stream_textconv(&semantic, format, out, options)?;
     Ok(())
 }
 

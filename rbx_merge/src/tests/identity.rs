@@ -397,6 +397,62 @@ fn differing_unique_id_addition_does_not_report_false_ambiguity() -> Result<()> 
 }
 
 #[test]
+fn one_ours_addition_contested_by_two_similar_theirs_is_ambiguous() -> Result<()> {
+    // `ours` adds a single no-UniqueId child; `theirs` adds two with the same
+    // (parent, class, name) and identical content, so both are equally good
+    // similarity matches for the lone `ours` candidate. The pairing is 1:1, so
+    // the candidate cannot be assigned to one of the two without an arbitrary,
+    // order-dependent guess. This is the mirror of "two `ours` candidates, one
+    // `theirs`" and must be declined the same way: report ambiguity and keep all
+    // three additions distinct, rather than letting whichever `theirs` comes
+    // first in document order claim the match.
+    let path = common::model_path("default-inserted-folder", "xml.rbxmx");
+    let base = common::read_fixture(&path)?;
+
+    let ours = common::edit_bytes(&base, &path, |dom| {
+        common::insert_child(
+            dom,
+            "Folder",
+            InstanceBuilder::new("StringValue")
+                .with_name("Item")
+                .with_property("Value", "same"),
+        )?;
+        Ok(())
+    })?;
+    let theirs = common::edit_bytes(&base, &path, |dom| {
+        for _ in 0..2 {
+            common::insert_child(
+                dom,
+                "Folder",
+                InstanceBuilder::new("StringValue")
+                    .with_name("Item")
+                    .with_property("Value", "same"),
+            )?;
+        }
+        Ok(())
+    })?;
+
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let (merged, diagnostics) = common::expect_clean(result);
+    let decoded = common::decode_bytes(&merged, &path)?;
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "ambiguous_identity"),
+        "a lone ours candidate contested by two similar theirs additions is ambiguous, got {diagnostics:#?}"
+    );
+
+    let folder = common::find_by_name(&decoded, "Folder")?;
+    // No arbitrary pairing: all three additions survive distinctly.
+    assert_eq!(
+        common::child_string_values(&decoded, folder),
+        vec!["same".to_owned(), "same".to_owned(), "same".to_owned()]
+    );
+    Ok(())
+}
+
+#[test]
 fn rename_without_unique_id_merges_with_concurrent_edit() -> Result<()> {
     // The case that otherwise conflicts: one side renames an instance with no
     // UniqueId while the other edits it. Rename recovery keeps them the same

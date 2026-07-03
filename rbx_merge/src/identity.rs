@@ -143,16 +143,28 @@ pub(crate) fn build_identities(
         }
     }
 
-    // The `theirs` additions still unmatched after UniqueId pairing reach the
-    // similarity heuristic, which gates each `(parent, class, name)` candidate on
-    // how closely its content matches the addition.
+    // The `theirs` additions that reach the similarity heuristic — those still
+    // unmatched after UniqueId pairing — grouped by the key they share. The
+    // pairing is 1:1, so the matcher weighs ambiguity from both sides: a single
+    // `ours` candidate contested by several similar `theirs` peers is as
+    // ambiguous as several `ours` candidates similar to one `theirs` addition,
+    // and neither can be paired without an arbitrary, order-dependent guess.
+    let theirs_peers = group_theirs_additions(theirs, &identities);
+    let no_peers: Vec<NodeId> = Vec::new();
     let doms = SemanticInputs { base, ours, theirs };
 
     for theirs_id in theirs.node_ids() {
         if identities.theirs_to_merge.contains_key(&theirs_id) {
             continue;
         }
-        match added_index.find_key_match(&identities, &doms, theirs_id, &mut consumed) {
+        let peers = {
+            let node = theirs.node(theirs_id);
+            node.parent
+                .and_then(|parent| theirs_peers.get(&(parent, node.class, node.name.clone())))
+                .unwrap_or(&no_peers)
+                .as_slice()
+        };
+        match added_index.find_key_match(&identities, &doms, theirs_id, peers, &mut consumed) {
             AddedMatch::Unique(candidate) => identities.set_theirs(candidate, theirs_id),
             AddedMatch::Ambiguous => {
                 diagnostics.push(ambiguous_identity_diagnostic(theirs.path(theirs_id)));
@@ -615,15 +627,18 @@ impl AddedIndex {
     ///
     /// Candidates sharing the addition's `(parent, class, name)` are gated by
     /// structural similarity: only those whose content is close enough to be the
-    /// same instance (identical additions score `1.0`) are eligible. Exactly one
-    /// eligible candidate is `Unique`; more than one is `Ambiguous` — neither
-    /// could be paired without an arbitrary, order-dependent guess. No similar
-    /// candidate at all is `None` — a distinct addition.
+    /// same instance (identical additions score `1.0`) are eligible. The pairing
+    /// is 1:1, so it is `Unique` only when exactly one eligible `ours` candidate
+    /// faces exactly one similar `theirs` peer. More than one eligible candidate,
+    /// or more than one peer similar to the chosen candidate, is `Ambiguous`:
+    /// neither could be paired without an arbitrary, order-dependent guess. No
+    /// similar candidate at all is `None` — a distinct addition.
     fn find_key_match(
         &mut self,
         identities: &IdentitySet,
         doms: &SemanticInputs<'_>,
         theirs_id: NodeId,
+        theirs_peers: &[NodeId],
         consumed: &mut HashSet<MergeNodeId>,
     ) -> AddedMatch {
         let theirs_node = doms.theirs.node(theirs_id);
@@ -654,15 +669,34 @@ impl AddedIndex {
             })
             .collect();
 
-        match similar.as_slice() {
-            [] => AddedMatch::None,
-            [only] => {
-                let only = *only;
-                consumed.insert(only);
-                AddedMatch::Unique(only)
-            }
-            _ => AddedMatch::Ambiguous,
+        let [only] = similar.as_slice() else {
+            return if similar.is_empty() {
+                AddedMatch::None
+            } else {
+                AddedMatch::Ambiguous
+            };
+        };
+        let only = *only;
+
+        // Symmetric ambiguity: decline if more than one of this addition's
+        // `theirs` peers is also similar to the chosen candidate — neither could
+        // be assigned to it non-arbitrarily. Counting over all peers, not just
+        // the still-unmatched ones, keeps the verdict independent of order.
+        let Some(ours_id) = ours_node_of(only) else {
+            return AddedMatch::None;
+        };
+        let contesting = theirs_peers
+            .iter()
+            .filter(|&&peer| {
+                addition_similarity(ours_id, peer, doms) >= RENAME_SIMILARITY_THRESHOLD
+            })
+            .count();
+        if contesting > 1 {
+            return AddedMatch::Ambiguous;
         }
+
+        consumed.insert(only);
+        AddedMatch::Unique(only)
     }
 }
 
@@ -715,4 +749,31 @@ fn addition_similarity(ours_id: NodeId, theirs_id: NodeId, doms: &SemanticInputs
 
     let children_match = (ours_node.children.len() == theirs_node.children.len()) as usize as f64;
     (equal as f64 + children_match) / (keys.len() as f64 + 1.0)
+}
+
+/// Group the `theirs` additions that reach the similarity heuristic — those still
+/// unmatched after UniqueId pairing — by `(parent, class, name)`. Siblings (same
+/// parent node, class, and name) always resolve to the same heuristic bucket, so
+/// this raw-node grouping is exactly the set of `theirs` additions that can
+/// contest one `ours` candidate; `find_key_match` weighs it for ambiguity on the
+/// `theirs` side.
+fn group_theirs_additions(
+    theirs: &SemanticDom,
+    identities: &IdentitySet,
+) -> HashMap<(NodeId, Ustr, String), Vec<NodeId>> {
+    let mut groups: HashMap<(NodeId, Ustr, String), Vec<NodeId>> = HashMap::new();
+    for theirs_id in theirs.node_ids() {
+        if identities.theirs_to_merge.contains_key(&theirs_id) {
+            continue;
+        }
+        let node = theirs.node(theirs_id);
+        let Some(parent) = node.parent else {
+            continue;
+        };
+        groups
+            .entry((parent, node.class, node.name.clone()))
+            .or_default()
+            .push(theirs_id);
+    }
+    groups
 }

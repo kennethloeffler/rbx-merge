@@ -143,6 +143,79 @@ fn unique_id_disambiguates_reordered_siblings() -> Result<()> {
 }
 
 #[test]
+fn unique_id_pairing_resolves_before_heuristic_ambiguity() -> Result<()> {
+    // Both sides add two identically-named siblings. One pair shares a UniqueId
+    // (an exact match); the other pair has no UniqueId and can only be paired by
+    // the (parent, class, name) heuristic. Resolving the UniqueId match first
+    // leaves the no-id `theirs` addition with a single remaining candidate, so
+    // it pairs cleanly. If the UniqueId pass did not run first, processing the
+    // no-id addition before the UniqueId one would see two still-available
+    // candidates and report a false ambiguity, splitting one instance into two.
+    let path = common::model_path("default-inserted-folder", "xml.rbxmx");
+    let shared_id = UniqueId::new(7, 7, 7);
+    let base = common::read_fixture(&path)?;
+
+    // ours adds the UniqueId-bearing item first, then the no-id item.
+    let ours = common::edit_bytes(&base, &path, |dom| {
+        common::insert_child(
+            dom,
+            "Folder",
+            InstanceBuilder::new("StringValue")
+                .with_name("Item")
+                .with_property("UniqueId", Variant::UniqueId(shared_id))
+                .with_property("Value", "shared"),
+        )?;
+        common::insert_child(
+            dom,
+            "Folder",
+            InstanceBuilder::new("StringValue")
+                .with_name("Item")
+                .with_property("Value", "plain"),
+        )?;
+        Ok(())
+    })?;
+    // theirs adds the no-id item *first*, so document order would hand it to the
+    // heuristic before the UniqueId match is resolved.
+    let theirs = common::edit_bytes(&base, &path, |dom| {
+        common::insert_child(
+            dom,
+            "Folder",
+            InstanceBuilder::new("StringValue")
+                .with_name("Item")
+                .with_property("Value", "plain"),
+        )?;
+        common::insert_child(
+            dom,
+            "Folder",
+            InstanceBuilder::new("StringValue")
+                .with_name("Item")
+                .with_property("UniqueId", Variant::UniqueId(shared_id))
+                .with_property("Value", "shared"),
+        )?;
+        Ok(())
+    })?;
+
+    let result = common::merge_fixture_bytes(&base, &ours, &theirs, &path)?;
+    let (merged, diagnostics) = common::expect_clean(result);
+    let decoded = common::decode_bytes(&merged, &path)?;
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "ambiguous_identity"),
+        "UniqueId-paired additions should not leave the no-id addition ambiguous, got {diagnostics:#?}"
+    );
+
+    let folder = common::find_by_name(&decoded, "Folder")?;
+    let mut values = common::child_string_values(&decoded, folder);
+    values.sort();
+    // Both same-instance pairs collapse to one instance each: exactly two
+    // children, not three.
+    assert_eq!(values, vec!["plain".to_owned(), "shared".to_owned()]);
+    Ok(())
+}
+
+#[test]
 fn rename_without_unique_id_merges_with_concurrent_edit() -> Result<()> {
     // The case that otherwise conflicts: one side renames an instance with no
     // UniqueId while the other edits it. Rename recovery keeps them the same

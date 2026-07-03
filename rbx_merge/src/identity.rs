@@ -125,11 +125,29 @@ pub(crate) fn build_identities(
 
     let mut added_index = AddedIndex::build(&identities, ours);
     let mut consumed = HashSet::new();
+
+    // Resolve every exact UniqueId pairing first, across all `theirs`
+    // additions, before any heuristic matching runs. A shared UniqueId is
+    // decisive, so claiming those candidates up front keeps a UniqueId match
+    // from looking — to an earlier heuristic lookup processed before it — like a
+    // second still-available candidate, which would make that lookup report a
+    // false ambiguity. With the exact matches already consumed, the heuristic
+    // pass only ever weighs the candidates that no UniqueId will claim.
     for theirs_id in theirs.node_ids() {
         if identities.theirs_to_merge.contains_key(&theirs_id) {
             continue;
         }
-        match added_index.find_match(&identities, theirs, theirs_id, &mut consumed) {
+        if let Some(candidate) = added_index.find_unique_id_match(theirs, theirs_id, &mut consumed)
+        {
+            identities.set_theirs(candidate, theirs_id);
+        }
+    }
+
+    for theirs_id in theirs.node_ids() {
+        if identities.theirs_to_merge.contains_key(&theirs_id) {
+            continue;
+        }
+        match added_index.find_key_match(&identities, theirs, theirs_id, &mut consumed) {
             AddedMatch::Unique(candidate) => identities.set_theirs(candidate, theirs_id),
             AddedMatch::Ambiguous => {
                 diagnostics.push(ambiguous_identity_diagnostic(theirs.path(theirs_id)));
@@ -515,8 +533,8 @@ fn unmatched_by_class(
 /// Both indexes are keyed exactly as the former linear scan filtered: by
 /// `UniqueId` for the exact-pairing fast path, and by (parent merge id, class,
 /// name) for the structural heuristic. Candidates are consumed as they are
-/// claimed (see `find_match`), so each `ours` addition pairs with at most one
-/// `theirs` addition.
+/// claimed (see `find_unique_id_match` and `find_key_match`), so each `ours`
+/// addition pairs with at most one `theirs` addition.
 struct AddedIndex {
     by_unique_id: HashMap<UniqueId, Vec<MergeNodeId>>,
     by_key: HashMap<(Option<MergeNodeId>, Ustr, String), Vec<MergeNodeId>>,
@@ -536,6 +554,9 @@ impl AddedIndex {
             let Some(ours_id) = entry.ours else {
                 continue;
             };
+            // Index every `ours`-only addition by `(parent, class, name)` for the
+            // structural heuristic, and additionally by UniqueId for the
+            // exact-match fast path.
             let ours_node = ours.node(ours_id);
             let ours_parent = ours_node
                 .parent
@@ -554,11 +575,36 @@ impl AddedIndex {
         }
     }
 
-    /// Find the `ours`-only addition a `theirs` addition pairs with, claiming it
-    /// so no later `theirs` node reuses it. `consumed` is shared across both
-    /// indexes; lookups drop already-claimed candidates so each list stays the
-    /// set of still-available matches.
-    fn find_match(
+    /// Pair a `theirs` addition with the `ours`-only addition that shares its
+    /// `UniqueId`, claiming it so no later `theirs` node reuses it. A shared
+    /// UniqueId is an exact, intentional pairing; only a single surviving
+    /// candidate is decisive, so 0 or 2+ yield no match and are left to the
+    /// heuristic pass. `consumed` drops already-claimed candidates so the list
+    /// stays the set of still-available matches.
+    fn find_unique_id_match(
+        &mut self,
+        theirs: &SemanticDom,
+        theirs_id: NodeId,
+        consumed: &mut HashSet<MergeNodeId>,
+    ) -> Option<MergeNodeId> {
+        let unique_id = theirs.unique_id(theirs_id)?;
+        let candidates = self.by_unique_id.get_mut(&unique_id)?;
+        candidates.retain(|id| !consumed.contains(id));
+        let [only] = candidates.as_slice() else {
+            return None;
+        };
+        let only = *only;
+        consumed.insert(only);
+        Some(only)
+    }
+
+    /// Pair a `theirs` addition with the `ours`-only addition that shares its
+    /// `(parent, class, name)`, claiming it so no later `theirs` node reuses it.
+    /// Runs only after every UniqueId pairing is resolved (see
+    /// `find_unique_id_match`), so the candidates a UniqueId match will claim are
+    /// already consumed. A single surviving candidate is `Unique`; 2+ is
+    /// `Ambiguous`; none is `None`.
+    fn find_key_match(
         &mut self,
         identities: &IdentitySet,
         theirs: &SemanticDom,
@@ -569,21 +615,6 @@ impl AddedIndex {
         let theirs_parent = theirs_node
             .parent
             .and_then(|parent| identities.theirs_to_merge.get(&parent).copied());
-
-        // A shared UniqueId is an exact, intentional pairing: trust it even when
-        // the name/class/parent heuristic below would be ambiguous. Only a single
-        // surviving candidate is decisive; 0 or 2+ fall through to the heuristic,
-        // exactly as the former scan did.
-        if let Some(unique_id) = theirs.unique_id(theirs_id)
-            && let Some(candidates) = self.by_unique_id.get_mut(&unique_id)
-        {
-            candidates.retain(|id| !consumed.contains(id));
-            if candidates.len() == 1 {
-                let only = candidates[0];
-                consumed.insert(only);
-                return AddedMatch::Unique(only);
-            }
-        }
 
         let key = (theirs_parent, theirs_node.class, theirs_node.name.clone());
         let Some(candidates) = self.by_key.get_mut(&key) else {

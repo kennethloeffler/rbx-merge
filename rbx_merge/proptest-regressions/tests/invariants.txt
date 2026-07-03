@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc f098bc3b717d17774c1aa3a87bd67c09d42752690c399c63b13e3d2a1aefcbdb # shrinks to file_name = "binary.rbxm", ours_edits = [Reparent(16858969491059862094, 1427953276029065207)], theirs_edits = [Reparent(238453349373515186, 11601711944709254758)]
+cc 895981fe6cb9ddd1622855d98a45f116ef76902aeba951301e8999964a4a968c # shrinks to side_edits = [AddChild(1, 2080113), SetRef(3, 0)]

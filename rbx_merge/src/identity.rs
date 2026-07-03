@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use indexmap::IndexMap;
 use rbx_reflection::ClassTag;
-use rbx_types::{Ref, UniqueId};
+use rbx_types::{Ref, UniqueId, Variant};
 use ustr::Ustr;
 
 use crate::diagnostics::{
@@ -143,11 +143,16 @@ pub(crate) fn build_identities(
         }
     }
 
+    // The `theirs` additions still unmatched after UniqueId pairing reach the
+    // similarity heuristic, which gates each `(parent, class, name)` candidate on
+    // how closely its content matches the addition.
+    let doms = SemanticInputs { base, ours, theirs };
+
     for theirs_id in theirs.node_ids() {
         if identities.theirs_to_merge.contains_key(&theirs_id) {
             continue;
         }
-        match added_index.find_key_match(&identities, theirs, theirs_id, &mut consumed) {
+        match added_index.find_key_match(&identities, &doms, theirs_id, &mut consumed) {
             AddedMatch::Unique(candidate) => identities.set_theirs(candidate, theirs_id),
             AddedMatch::Ambiguous => {
                 diagnostics.push(ambiguous_identity_diagnostic(theirs.path(theirs_id)));
@@ -555,8 +560,13 @@ impl AddedIndex {
                 continue;
             };
             // Index every `ours`-only addition by `(parent, class, name)` for the
-            // structural heuristic, and additionally by UniqueId for the
-            // exact-match fast path.
+            // similarity heuristic, and additionally by UniqueId for the
+            // exact-match fast path. A UniqueId is the strongest identity signal
+            // but not a veto: an addition whose id matches nothing can still be
+            // recovered by content similarity (see `find_key_match`), because
+            // Studio assigns a fresh id to each independently-created instance —
+            // so even two sides that added the very same thing carry different
+            // ids, and pairing them by content is exactly the desired dedup.
             let ours_node = ours.node(ours_id);
             let ours_parent = ours_node
                 .parent
@@ -598,20 +608,25 @@ impl AddedIndex {
         Some(only)
     }
 
-    /// Pair a `theirs` addition with the `ours`-only addition that shares its
-    /// `(parent, class, name)`, claiming it so no later `theirs` node reuses it.
-    /// Runs only after every UniqueId pairing is resolved (see
-    /// `find_unique_id_match`), so the candidates a UniqueId match will claim are
-    /// already consumed. A single surviving candidate is `Unique`; 2+ is
-    /// `Ambiguous`; none is `None`.
+    /// Pair a `theirs` addition with the `ours`-only addition that is the same
+    /// instance, claiming it so no later `theirs` node reuses it. Runs only after
+    /// every UniqueId pairing is resolved (see `find_unique_id_match`), so the
+    /// candidates a UniqueId match will claim are already consumed.
+    ///
+    /// Candidates sharing the addition's `(parent, class, name)` are gated by
+    /// structural similarity: only those whose content is close enough to be the
+    /// same instance (identical additions score `1.0`) are eligible. Exactly one
+    /// eligible candidate is `Unique`; more than one is `Ambiguous` — neither
+    /// could be paired without an arbitrary, order-dependent guess. No similar
+    /// candidate at all is `None` — a distinct addition.
     fn find_key_match(
         &mut self,
         identities: &IdentitySet,
-        theirs: &SemanticDom,
+        doms: &SemanticInputs<'_>,
         theirs_id: NodeId,
         consumed: &mut HashSet<MergeNodeId>,
     ) -> AddedMatch {
-        let theirs_node = theirs.node(theirs_id);
+        let theirs_node = doms.theirs.node(theirs_id);
         let theirs_parent = theirs_node
             .parent
             .and_then(|parent| identities.theirs_to_merge.get(&parent).copied());
@@ -621,7 +636,25 @@ impl AddedIndex {
             return AddedMatch::None;
         };
         candidates.retain(|id| !consumed.contains(id));
-        match candidates.as_slice() {
+
+        // Keep only the still-available candidates whose content is similar
+        // enough to be the same instance. Identical additions — the common case
+        // of both sides adding the same thing, each with its own regenerated
+        // UniqueId — score 1.0; genuinely different instances that merely share a
+        // name fall below the threshold and are left distinct rather than merged.
+        let ours_node_of =
+            |candidate: MergeNodeId| identities.entry(candidate).and_then(|e| e.ours);
+        let similar: Vec<MergeNodeId> = candidates
+            .iter()
+            .copied()
+            .filter(|&candidate| {
+                ours_node_of(candidate).is_some_and(|ours_id| {
+                    addition_similarity(ours_id, theirs_id, doms) >= RENAME_SIMILARITY_THRESHOLD
+                })
+            })
+            .collect();
+
+        match similar.as_slice() {
             [] => AddedMatch::None,
             [only] => {
                 let only = *only;
@@ -631,4 +664,55 @@ impl AddedIndex {
             _ => AddedMatch::Ambiguous,
         }
     }
+}
+
+/// Structural similarity of an `ours` and a `theirs` addition in `[0, 1]`, the
+/// content side of pairing two additions across files: the fraction of comparable
+/// properties whose values match, plus a point for an equal child count,
+/// normalized so identical content scores `1.0`.
+///
+/// Two property kinds are excluded from the comparison. Volatile identity
+/// metadata (see `is_volatile_property`) is excluded as elsewhere. Reference-typed
+/// properties are excluded too, because a `Ref`'s raw referent differs across
+/// files even when it points at the same logical instance — comparing them
+/// faithfully would require resolving through the very match map being built, an
+/// ordering-dependent problem with no answer for self- or mutually-referential
+/// additions. Excluding refs keeps the metric robust: identical additions that
+/// reference shared (or themselves) still score `1.0` and dedup, and the divergent
+/// case is caught by the property merge, which conflicts on a genuinely differing
+/// ref. The cost is that instances distinguished *only* by refs (e.g. Welds) read
+/// as similar — no worse than the name-only pairing this gates.
+fn addition_similarity(ours_id: NodeId, theirs_id: NodeId, doms: &SemanticInputs<'_>) -> f64 {
+    let ours_node = doms.ours.node(ours_id);
+    let theirs_node = doms.theirs.node(theirs_id);
+
+    let comparable = |key: Ustr| {
+        if is_volatile_property(key) {
+            return false;
+        }
+        // Skip a key whose value is a reference on either side.
+        !matches!(ours_node.properties.get(&key), Some(Variant::Ref(_)))
+            && !matches!(theirs_node.properties.get(&key), Some(Variant::Ref(_)))
+    };
+
+    let keys: std::collections::BTreeSet<Ustr> = ours_node
+        .properties
+        .keys()
+        .chain(theirs_node.properties.keys())
+        .copied()
+        .filter(|key| comparable(*key))
+        .collect();
+    let mut equal = 0usize;
+    for key in &keys {
+        if let (Some(a), Some(b)) = (
+            ours_node.properties.get(key),
+            theirs_node.properties.get(key),
+        ) && a == b
+        {
+            equal += 1;
+        }
+    }
+
+    let children_match = (ours_node.children.len() == theirs_node.children.len()) as usize as f64;
+    (equal as f64 + children_match) / (keys.len() as f64 + 1.0)
 }

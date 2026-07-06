@@ -19,9 +19,8 @@ fn clean_one_sided_property_edit_snapshots_output() -> Result<()> {
     let result = common::merge_fixture_bytes(&base, &ours, &base, &path)?;
     let (merged, diagnostics) = common::expect_clean(result);
 
-    common::with_path_redaction(|| {
-        insta::assert_debug_snapshot!("clean_one_sided_property_edit_diagnostics", diagnostics);
-    });
+    let diagnostics = common::normalize_diagnostic_paths(&diagnostics);
+    insta::assert_debug_snapshot!("clean_one_sided_property_edit_diagnostics", diagnostics);
     insta::assert_snapshot!(
         "clean_one_sided_property_edit_output_xml",
         common::xml_string(&merged)?
@@ -119,9 +118,8 @@ fn clean_one_sided_add_snapshots_output() -> Result<()> {
     let result = common::merge_fixture_bytes(&base, &ours, &base, &path)?;
     let (merged, diagnostics) = common::expect_clean(result);
 
-    common::with_path_redaction(|| {
-        insta::assert_debug_snapshot!("clean_one_sided_add_diagnostics", diagnostics);
-    });
+    let diagnostics = common::normalize_diagnostic_paths(&diagnostics);
+    insta::assert_debug_snapshot!("clean_one_sided_add_diagnostics", diagnostics);
     insta::assert_snapshot!(
         "clean_one_sided_add_output_xml",
         common::xml_string(&merged)?

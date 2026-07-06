@@ -17,7 +17,7 @@ DataModel
       NumberRange = NumberRange(5.0, 10.0)
       NumberSequence = NumberSequence([(0.0, 1.0, 0.0), (0.5, 0.0, 0.0), (1.0, 1.0, 0.0)])
       Rect = Rect(1.0, 2.0, 3.0, 4.0)
-      String = BinaryString(len=13 blake3=ede5c0b10f2ec4979c69b52f61e42ff5b413519ce09be0f14d098dcfe5f6f98d)
+      String = "Hello, world!"
       UDim = UDim(0.5, 100)
       UDim2 = UDim2(0.5, 10, 0.7, 30)
       Vector2 = Vector2(10.0, 50.0)

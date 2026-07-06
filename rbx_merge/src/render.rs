@@ -197,7 +197,7 @@ pub(crate) fn display_variant_into(
                 }
                 out.push_str(key);
                 out.push_str(": ");
-                display_variant_into(out, value, source, doms);
+                display_attribute_value_into(out, value, source, doms);
             }
             out.push('}');
         }
@@ -228,6 +228,21 @@ pub(crate) fn display_variant(
     let mut out = String::new();
     display_variant_into(&mut out, value, source, doms);
     out
+}
+
+fn display_attribute_value_into(
+    out: &mut String,
+    value: &Variant,
+    source: ValueSource,
+    doms: &SemanticInputs<'_>,
+) {
+    match value {
+        Variant::BinaryString(bytes) => match std::str::from_utf8(bytes.as_ref()) {
+            Ok(text) => w!(out, "{text:?}"),
+            Err(_) => display_variant_into(out, value, source, doms),
+        },
+        _ => display_variant_into(out, value, source, doms),
+    }
 }
 
 fn ref_display_into(
@@ -368,7 +383,7 @@ fn render_node_lines(
                     push_indent(out, depth + 1);
                     out.push_str(INDENT);
                     w!(out, "{attr_key} = ");
-                    display_variant_into(out, attr_value, ValueSource::Base, doms);
+                    display_attribute_value_into(out, attr_value, ValueSource::Base, doms);
                     out.push('\n');
                 }
             }

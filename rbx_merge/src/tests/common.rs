@@ -124,13 +124,29 @@ pub fn merge_fixture_bytes(
     )?)
 }
 
-/// Run `f` (which contains the snapshot assertion) with an insta filter that
-/// rewrites absolute fixture paths to be relative to the repository root, so
-/// snapshots do not embed a machine-specific prefix.
-pub fn with_path_redaction<R>(f: impl FnOnce() -> R) -> R {
-    let mut settings = insta::Settings::clone_current();
-    settings.add_filter(r#"[^"]*/rbx-test-files/"#, "rbx-test-files/");
-    settings.bind(f)
+/// Rewrites paths in diagnostics to truncate at workspace root and always
+/// use forward-slash separators.
+pub fn normalize_diagnostic_paths(diagnostics: &[Diagnostic]) -> Vec<Diagnostic> {
+    let root = test_files_root();
+    let workspace = root.parent().unwrap();
+
+    diagnostics
+        .iter() // &Diagnostic
+        .cloned() // Diagnostic (owned — so we can mutate it)
+        .map(|mut d| {
+            d.path = d.path.map(|p| {
+                Path::new(p.as_ref())
+                    .strip_prefix(workspace)
+                    .unwrap_or(Path::new(p.as_ref()))
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/")
+                    .into()
+            });
+            d
+        })
+        .collect()
 }
 
 pub fn expect_clean(report: MergeReport) -> (Vec<u8>, Vec<Diagnostic>) {

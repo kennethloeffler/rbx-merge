@@ -15,11 +15,11 @@ use std::io;
 
 use rbx_types::{CFrame, ContentType, PhysicalProperties, Ref, Variant, Vector3};
 
-use crate::TextconvOptions;
 use crate::format::FileFormat;
 use crate::semantic::{
-    NodeId, SemanticDom, SemanticInputs, SemanticInstance, ValueSource, bytes_summary,
+    bytes_summary, NodeId, SemanticDom, SemanticInputs, SemanticInstance, ValueSource,
 };
+use crate::TextconvOptions;
 
 const INDENT: &str = "  ";
 
@@ -214,6 +214,7 @@ pub(crate) fn display_variant_into(
         Variant::BinaryString(value) => w!(out, "BinaryString({})", bytes_summary(value.as_ref())),
         Variant::SharedString(value) => w!(out, "SharedString({})", bytes_summary(value.data())),
         Variant::NetAssetRef(value) => w!(out, "NetAssetRef({})", bytes_summary(value.data())),
+        Variant::UniqueId(value) => w!(out, "UniqueId({})", value.to_string()),
         other => w!(out, "{other:?}"),
     }
 }

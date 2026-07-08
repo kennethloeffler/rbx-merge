@@ -15,11 +15,11 @@ use std::io;
 
 use rbx_types::{CFrame, ContentType, PhysicalProperties, Ref, Variant, Vector3};
 
+use crate::TextconvOptions;
 use crate::format::FileFormat;
 use crate::semantic::{
-    bytes_summary, NodeId, SemanticDom, SemanticInputs, SemanticInstance, ValueSource,
+    NodeId, SemanticDom, SemanticInputs, SemanticInstance, ValueSource, bytes_summary,
 };
-use crate::TextconvOptions;
 
 const INDENT: &str = "  ";
 

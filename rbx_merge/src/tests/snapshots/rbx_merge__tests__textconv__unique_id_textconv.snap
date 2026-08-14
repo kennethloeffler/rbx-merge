@@ -1,0 +1,9 @@
+---
+source: rbx_merge/src/tests/textconv.rs
+expression: text
+---
+# rbx-merge — binary model (.rbxm)
+DataModel
+
+  Part "P"
+    UniqueId = UniqueId(0123456789abcdef89abcdef1234abcd)

@@ -97,6 +97,23 @@ fn textconv_snapshots_internal_refs() -> Result<()> {
 }
 
 #[test]
+fn textconv_snapshots_unique_id() -> Result<()> {
+    let unique_id = UniqueId::new(0x1234_abcd, 0x89ab_cdef, 0x0123_4567_89ab_cdef);
+    let part = InstanceBuilder::new("Part")
+        .with_name("P")
+        .with_property("UniqueId", Variant::UniqueId(unique_id));
+    let dom = WeakDom::new(InstanceBuilder::new("DataModel").with_child(part));
+
+    let mut bytes = Vec::new();
+    rbx_binary::to_writer(&mut bytes, &dom, dom.root().children())?;
+    let path = Path::new("unique-id.rbxm");
+
+    let text = textconv(&bytes, Some(path), TextconvOptions::all())?;
+    insta::assert_snapshot!("unique_id_textconv", text);
+    Ok(())
+}
+
+#[test]
 fn textconv_snapshots_binary_model() -> Result<()> {
     let path = common::model_path("attributes", "binary.rbxm");
     let bytes = common::read_fixture(&path)?;

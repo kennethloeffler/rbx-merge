@@ -14,7 +14,7 @@ rbx-merge textconv <path>
 rbx-merge merge --base <base> --ours <ours> --theirs <theirs> --out <out> --path <repo-path>
 rbx-merge resolve --stash-dir <dir> --out <path>
 rbx-merge diff <old> <new>
-rbx-merge install [--global] [--stash] [--write-gitattributes] [--driver-path <exe>]
+rbx-merge install [--global] [--no-stash] [--write-gitattributes] [--driver-path <exe>]
 rbx-merge doctor
 rbx-merge uninstall [--global]
 ```
@@ -69,10 +69,10 @@ Until they run it, you do not want Git falling back to a line-based merge of the
 
 [merge "rbxdom"]
     name = Roblox semantic merge (rbx-merge)
-    driver = rbx-merge merge --base %O --ours %A --theirs %B --out %A --path %P
+    driver = rbx-merge merge --base %O --ours %A --theirs %B --out %A --path %P --stash-dir .rbxmerge/%P
 ```
 
-Pass `install --stash` to use the stash-based driver (`--stash-dir .rbxmerge/%P`, and gitignore `.rbxmerge/`) so conflicts survive Git discarding its temporaries. See [Conflict Resolution](#conflict-resolution).
+The driver stashes conflicted merges under `.rbxmerge/` (which `install` gitignores locally) so conflict state survives Git discarding its temporaries. See [Conflict Resolution](#conflict-resolution). Pass `install --no-stash` to use a plain driver without the stash.
 
 For worktrees: `install` writes the override to the repository's shared `.git/info/attributes`, so it applies to every worktree. `rbx-merge uninstall` reverts the per-clone pieces (config entries, attributes override, and `.rbxmerge/` ignore) but leaves any committed `.gitattributes` in place.
 
@@ -92,13 +92,8 @@ rbx-merge merge --base b --ours o --theirs t --out m --resolutions conflicts.txt
 ```
 
 Under Git, the base/theirs temporaries are discarded once the driver exits
-non-zero, so the driver can stash everything it needs to resolve later:
-
-```ini
-[merge "rbxdom"]
-    driver = rbx-merge merge --base %O --ours %A --theirs %B --out %A --path %P --stash-dir .rbxmerge/%P
-```
-
+non-zero, so the driver `install` sets up stashes everything it needs to
+resolve later (`--stash-dir .rbxmerge/%P`; disable with `install --no-stash`).
 On conflict this writes `.rbxmerge/<file>/{base,ours,theirs,path,conflicts.txt}`.
 Edit `conflicts.txt`, then re-merge from the stash into the working file:
 

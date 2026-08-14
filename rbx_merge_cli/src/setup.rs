@@ -56,8 +56,9 @@ pub struct InstallOptions {
     /// to `rbx-merge` (resolved on PATH). Shell-quoted as needed, so spaced
     /// paths are fine.
     pub driver_path: String,
-    /// Use the stash-based merge driver so conflicts survive Git discarding its
-    /// temporaries, and locally ignore the resulting `.rbxmerge/` directory.
+    /// Use the stash-based merge driver (the default) so conflicts survive Git
+    /// discarding its temporaries, and locally ignore the resulting
+    /// `.rbxmerge/` directory. Disabled by `--no-stash`.
     pub stash: bool,
     /// Also write the safe `binary` defaults into the repo's committed
     /// `.gitattributes` (creating or updating a managed block).
@@ -116,11 +117,13 @@ pub fn install(options: &InstallOptions) -> Result<ExitCode> {
         println!("{} already up to date", attributes.display());
     }
 
+    let exclude = git_path("info/exclude")?;
     if options.stash {
-        let exclude = git_path("info/exclude")?;
         if append_line_if_missing(&exclude, ".rbxmerge/")? {
             println!("locally ignored .rbxmerge/ via {}", exclude.display());
         }
+    } else if remove_line_if_present(&exclude, ".rbxmerge/")? {
+        println!("removed stale .rbxmerge/ ignore from {}", exclude.display());
     }
 
     if options.write_gitattributes {

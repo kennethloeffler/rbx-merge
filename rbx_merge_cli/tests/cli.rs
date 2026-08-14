@@ -504,7 +504,7 @@ fn uninstall_reverts_install() {
     let scratch = Scratch::new("uninst");
     git_init_isolated(&scratch.dir);
     let install = setup_cmd(&scratch.dir)
-        .args(["install", "--stash", "--driver-path"])
+        .args(["install", "--driver-path"])
         .arg(BIN)
         .output()
         .expect("run install");
@@ -534,6 +534,54 @@ fn uninstall_reverts_install() {
     assert!(
         !exclude.lines().any(|line| line.trim() == ".rbxmerge/"),
         "got:\n{exclude}"
+    );
+}
+
+#[test]
+fn no_stash_install_reverts_stash_pieces() {
+    let scratch = Scratch::new("nostash");
+    git_init_isolated(&scratch.dir);
+
+    let read_driver = || {
+        let config = git_isolated(&scratch.dir)
+            .args(["config", "--get", "merge.rbxdom.driver"])
+            .output()
+            .expect("read merge driver config");
+        String::from_utf8_lossy(&config.stdout).into_owned()
+    };
+    let excludes_rbxmerge = || {
+        fs::read_to_string(scratch.dir.join(".git/info/exclude"))
+            .unwrap_or_default()
+            .lines()
+            .any(|line| line.trim() == ".rbxmerge/")
+    };
+
+    // The default install uses the stash driver and ignores .rbxmerge/.
+    let install = setup_cmd(&scratch.dir)
+        .args(["install", "--driver-path"])
+        .arg(BIN)
+        .output()
+        .expect("run install");
+    assert!(install.status.success());
+    let driver = read_driver();
+    assert!(driver.contains("--stash-dir .rbxmerge/%P"), "got: {driver}");
+    assert!(
+        excludes_rbxmerge(),
+        "default install should ignore .rbxmerge/"
+    );
+
+    // --no-stash rewrites the plain driver and drops the stale ignore line.
+    let plain = setup_cmd(&scratch.dir)
+        .args(["install", "--no-stash", "--driver-path"])
+        .arg(BIN)
+        .output()
+        .expect("run install --no-stash");
+    assert!(plain.status.success());
+    let driver = read_driver();
+    assert!(!driver.contains("--stash-dir"), "got: {driver}");
+    assert!(
+        !excludes_rbxmerge(),
+        "--no-stash should remove the stale .rbxmerge/ ignore"
     );
 }
 

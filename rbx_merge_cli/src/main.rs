@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use rbx_merge::{
     Conflict, Diagnostic, Error as MergeError, FileInput, MergeSettings, Resolutions, Side,
     TextconvOptions, merge_files, textconv_to,
@@ -105,9 +105,10 @@ enum Command {
         /// paths are fine.
         #[arg(long, default_value = "rbx-merge")]
         driver_path: String,
-        /// Use the stash-based merge driver so conflicts survive Git discarding
-        /// its temporaries, and locally ignore the resulting `.rbxmerge/` dir.
-        #[arg(long)]
+        /// Use the plain merge driver instead of the default stash-based one.
+        /// Conflict state will not survive Git discarding its temporaries, so
+        /// `rbx-merge resolve` will not be available after a conflict.
+        #[arg(long = "no-stash", action = ArgAction::SetFalse)]
         stash: bool,
         /// Also write the safe `binary` defaults into the repo's committed
         /// `.gitattributes` so collaborators fail safe until they run install.

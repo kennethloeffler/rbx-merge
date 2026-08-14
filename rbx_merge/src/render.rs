@@ -214,6 +214,7 @@ pub(crate) fn display_variant_into(
         Variant::BinaryString(value) => w!(out, "BinaryString({})", bytes_summary(value.as_ref())),
         Variant::SharedString(value) => w!(out, "SharedString({})", bytes_summary(value.data())),
         Variant::NetAssetRef(value) => w!(out, "NetAssetRef({})", bytes_summary(value.data())),
+        Variant::UniqueId(value) => w!(out, "UniqueId({})", value.to_string()),
         other => w!(out, "{other:?}"),
     }
 }

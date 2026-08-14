@@ -12,23 +12,55 @@ This repository contains two crates:
 ```sh
 rbx-merge textconv <path>
 rbx-merge merge --base <base> --ours <ours> --theirs <theirs> --out <out> --path <repo-path>
+rbx-merge resolve --stash-dir <dir> --out <path>
 rbx-merge diff <old> <new>
+rbx-merge install [--global] [--no-stash] [--write-gitattributes] [--driver-path <exe>]
+rbx-merge doctor
+rbx-merge uninstall [--global]
 ```
 
-`textconv` writes deterministic semantic text to stdout. `merge` writes the merged Roblox file only when the backend reports a clean result; conflicts are printed to stderr and the command exits nonzero. `diff` currently prints the two semantic textconv outputs with file headers.
+`textconv` writes deterministic semantic text to stdout. `merge` writes the merged Roblox file only when the backend reports a clean result; conflicts are printed to stderr and the command exits nonzero. `resolve` re-runs a conflicted merge from a `--stash-dir` after its `conflicts.txt` has been edited; see [Conflict Resolution](#conflict-resolution). `diff` currently prints the two semantic textconv outputs with file headers.
+
+`install` configures the current clone to use the diff and merge drivers, `doctor` checks that setup and exits nonzero when a critical piece is missing, and `uninstall` reverts `install`. See [Git Integration](#git-integration).
 
 ## Git Integration
 
-`.gitattributes`:
+Run once per clone:
 
-```gitattributes
-*.rbxl  diff=rbxdom merge=rbxdom
-*.rbxlx diff=rbxdom merge=rbxdom
-*.rbxm  diff=rbxdom merge=rbxdom
-*.rbxmx diff=rbxdom merge=rbxdom
+```sh
+rbx-merge install          # this clone (--global: every repo on this machine,
+                           # see Machine-wide install below)
+rbx-merge doctor           # verify the current clone at any time
+rbx-merge uninstall        # revert install (--global: revert the machine-wide one)
 ```
 
-Git config:
+### Why a committed `.gitattributes` isn't enough
+
+Git lets a repository *name* a merge/diff driver in a committed `.gitattributes`, but for security it refuses to let the repository *define* the command that driver runs, that must live in Git config or `.git/info/attributes`, neither of which `git clone` copies. So every collaborator needs the one-time `install`.
+
+Until they run it, you do not want Git falling back to a line-based merge of these structured files: for `.rbxlx`/`.rbxmx` a "clean" line merge can produce a valid-looking but semantically wrong file. Commit them as `binary` instead, so an uninstalled clone gets a loud conflict that keeps its own side rather than a silent corruption:
+
+```gitattributes
+# .gitattributes — committed; the safe default before anyone runs install
+*.rbxl  binary
+*.rbxlx binary
+*.rbxm  binary
+*.rbxmx binary
+```
+
+`rbx-merge install --write-gitattributes` writes exactly this block. `install` then layers the active drivers on top via the higher-precedence `.git/info/attributes` (written per clone, never committed):
+
+```gitattributes
+# .git/info/attributes — written by install
+*.rbxl  merge=rbxdom diff=rbxdom
+*.rbxlx merge=rbxdom diff=rbxdom
+*.rbxm  merge=rbxdom diff=rbxdom
+*.rbxmx merge=rbxdom diff=rbxdom
+```
+
+### Under the hood
+
+`install` writes the following Git config to the repo's local config, alongside the `.git/info/attributes` override shown above:
 
 ```ini
 [diff "rbxdom"]
@@ -36,9 +68,22 @@ Git config:
     cachetextconv = true
 
 [merge "rbxdom"]
-    name = Roblox semantic merge
-    driver = rbx-merge merge --base %O --ours %A --theirs %B --out %A --path %P
+    name = Roblox semantic merge (rbx-merge)
+    driver = rbx-merge merge --base %O --ours %A --theirs %B --out %A --path %P --stash-dir .rbxmerge/%P
 ```
+
+The driver stashes conflicted merges under `.rbxmerge/` (which `install` gitignores locally) so conflict state survives Git discarding its temporaries. See [Conflict Resolution](#conflict-resolution). Pass `install --no-stash` to use a plain driver without the stash.
+
+For worktrees: `install` writes the override to the repository's shared `.git/info/attributes`, so it applies to every worktree. `rbx-merge uninstall` reverts the per-clone pieces (config entries, attributes override, and `.rbxmerge/` ignore) but leaves any committed `.gitattributes` in place.
+
+### Machine-wide install
+
+`rbx-merge install --global` (Git ≥ 2.43) covers every repo on this machine in one step: the driver definitions go to `~/.gitconfig` and the activation to Git's global attributes file (`core.attributesFile`, defaulting to `~/.config/git/attributes`). Nothing repo-local is written, and `rbx-merge uninstall --global` reverts exactly this set; the two scopes never mix.
+
+Two caveats, which `install --global` and `doctor` also print:
+
+- It applies to every Git repo on this machine, including clones of projects that never adopted rbx-merge.
+- The global attributes file is Git's lowest-precedence tier: any committed `.gitattributes` rule overrides it. In particular, repos committing the recommended `binary` safe default still need a per-clone `rbx-merge install`, whose `.git/info/attributes` override outranks the committed file. `doctor` reports which case a clone is in.
 
 ## Conflict Resolution
 
@@ -56,13 +101,8 @@ rbx-merge merge --base b --ours o --theirs t --out m --resolutions conflicts.txt
 ```
 
 Under Git, the base/theirs temporaries are discarded once the driver exits
-non-zero, so the driver can stash everything it needs to resolve later:
-
-```ini
-[merge "rbxdom"]
-    driver = rbx-merge merge --base %O --ours %A --theirs %B --out %A --path %P --stash-dir .rbxmerge/%P
-```
-
+non-zero, so the driver `install` sets up stashes everything it needs to
+resolve later (`--stash-dir .rbxmerge/%P`; disable with `install --no-stash`).
 On conflict this writes `.rbxmerge/<file>/{base,ours,theirs,path,conflicts.txt}`.
 Edit `conflicts.txt`, then re-merge from the stash into the working file:
 

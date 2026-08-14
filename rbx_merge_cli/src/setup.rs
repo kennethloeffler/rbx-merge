@@ -15,10 +15,15 @@
 //! * `install` writes the driver definitions to Git config and a
 //!   higher-precedence `*.ext merge=rbxdom diff=rbxdom` override into
 //!   `.git/info/attributes`, switching that clone over to the semantic driver.
+//! * `install --global` instead writes the definitions to `~/.gitconfig` and
+//!   the activation to Git's global attributes file: every repo on the machine
+//!   is covered, but any committed `.gitattributes` rule (including the safe
+//!   default above) overrides it, so those repos still need a per-clone
+//!   install. The two scopes never mix.
 //! * `doctor` reports whether the current clone is in the safe-but-inactive
 //!   state, fully active, or misconfigured.
-//! * `uninstall` reverts the per-clone pieces, leaving the committed safe
-//!   default in place.
+//! * `uninstall` reverts the per-clone pieces (`--global`: the machine-wide
+//!   ones), leaving the committed safe default in place.
 
 use std::{
     fs,
@@ -48,9 +53,11 @@ const END: &str = "# END rbx-merge";
 
 /// Options for `rbx-merge install`.
 pub struct InstallOptions {
-    /// Write the driver definitions to `--global` config instead of this
-    /// repo's `--local` config. The `.git/info/attributes` override is always
-    /// per-clone regardless, so `install` must still be run once per clone.
+    /// Install machine-wide instead of for this clone: driver definitions go
+    /// to `--global` config and activation to Git's global attributes file.
+    /// Nothing repo-local is written. Overridden by any committed
+    /// `.gitattributes` rule, so repos with the `binary` safe default still
+    /// need a per-clone install.
     pub global: bool,
     /// The executable name or path to invoke in the driver commands. Defaults
     /// to `rbx-merge` (resolved on PATH). Shell-quoted as needed, so spaced
@@ -65,11 +72,9 @@ pub struct InstallOptions {
     pub write_gitattributes: bool,
 }
 
-/// Configure the current clone to use the rbx-merge diff and merge drivers.
+/// Configure the current clone (or, with `--global`, every repo on this
+/// machine) to use the rbx-merge diff and merge drivers.
 pub fn install(options: &InstallOptions) -> Result<ExitCode> {
-    // Fail early, with Git's own message, when not run inside a repository.
-    absolute_git_dir()?;
-
     if options.driver_path.is_empty() {
         bail!("--driver-path must not be empty");
     }
@@ -90,41 +95,28 @@ pub fn install(options: &InstallOptions) -> Result<ExitCode> {
         );
     }
 
-    let scope = if options.global {
-        "--global"
+    if options.global {
+        install_global(options)
     } else {
-        "--local"
-    };
-    let exe = sh_quote(&options.driver_path);
-    set_config(
-        scope,
-        "merge.rbxdom.name",
-        "Roblox semantic merge (rbx-merge)",
-    )?;
-    set_config(
-        scope,
-        "merge.rbxdom.driver",
-        &merge_driver(&options.driver_path, options.stash),
-    )?;
-    set_config(scope, "diff.rbxdom.textconv", &format!("{exe} textconv"))?;
-    set_config(scope, "diff.rbxdom.cachetextconv", "true")?;
-    println!("configured merge.rbxdom / diff.rbxdom in {scope} Git config");
+        install_local(options)
+    }
+}
+
+/// Per-clone install: local config plus the `.git/info/attributes` override.
+fn install_local(options: &InstallOptions) -> Result<ExitCode> {
+    // Fail early, with Git's own message, when not run inside a repository.
+    absolute_git_dir()?;
+
+    write_driver_config("--local", options)?;
 
     let attributes = git_path("info/attributes")?;
-    if upsert_block(&attributes, &attributes_body())? {
+    if upsert_block(&attributes, &attributes_body(false))? {
         println!("wrote semantic-driver override to {}", attributes.display());
     } else {
         println!("{} already up to date", attributes.display());
     }
 
-    let exclude = git_path("info/exclude")?;
-    if options.stash {
-        if append_line_if_missing(&exclude, ".rbxmerge/")? {
-            println!("locally ignored .rbxmerge/ via {}", exclude.display());
-        }
-    } else if remove_line_if_present(&exclude, ".rbxmerge/")? {
-        println!("removed stale .rbxmerge/ ignore from {}", exclude.display());
-    }
+    sync_stash_ignore(&git_path("info/exclude")?, options.stash)?;
 
     if options.write_gitattributes {
         let top = top_level()?;
@@ -144,19 +136,96 @@ pub fn install(options: &InstallOptions) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Remove the driver config and per-clone attribute override written by
-/// `install`. The committed `.gitattributes` safe default is left in place.
-pub fn uninstall(global: bool) -> Result<ExitCode> {
-    absolute_git_dir()?;
+/// Machine-wide install: global config plus Git's global attributes file.
+/// Writes nothing repo-local; does not need to run inside a repository.
+fn install_global(options: &InstallOptions) -> Result<ExitCode> {
+    // Resolve the attributes path first so an old Git fails before any
+    // config is written.
+    let attributes = global_attributes_path()?;
 
-    let scope = if global { "--global" } else { "--local" };
-    for section in ["merge.rbxdom", "diff.rbxdom"] {
-        if git_ok(&["config", scope, "--remove-section", section]).is_some() {
-            println!("removed {section} from {scope} Git config");
-        } else {
-            println!("{section} not present in {scope} Git config");
+    write_driver_config("--global", options)?;
+
+    if upsert_block(&attributes, &attributes_body(true))? {
+        println!(
+            "wrote machine-wide driver activation to {}",
+            attributes.display()
+        );
+    } else {
+        println!("{} already up to date", attributes.display());
+    }
+
+    sync_stash_ignore(&global_excludes_path()?, options.stash)?;
+
+    println!("note: this applies to every Git repo on this machine");
+    println!(
+        "note: any committed .gitattributes rule overrides it — repos with the \
+         `binary` safe default still need `rbx-merge install` run in each clone"
+    );
+    if let Ok(top) = top_level() {
+        let contents = fs::read_to_string(top.join(".gitattributes")).unwrap_or_default();
+        if EXTENSIONS
+            .iter()
+            .any(|&ext| ext_posture(&contents, ext) != ExtPosture::Unmentioned)
+        {
+            println!(
+                "note: this repo's committed .gitattributes overrides the machine-wide \
+                 install here — run `rbx-merge install` (without --global) in this clone"
+            );
         }
     }
+    println!("done — run `rbx-merge doctor` inside a repo to verify");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Write the driver-definition keys to the given config scope.
+fn write_driver_config(scope: &str, options: &InstallOptions) -> Result<()> {
+    let exe = sh_quote(&options.driver_path);
+    set_config(
+        scope,
+        "merge.rbxdom.name",
+        "Roblox semantic merge (rbx-merge)",
+    )?;
+    set_config(
+        scope,
+        "merge.rbxdom.driver",
+        &merge_driver(&options.driver_path, options.stash),
+    )?;
+    set_config(scope, "diff.rbxdom.textconv", &format!("{exe} textconv"))?;
+    set_config(scope, "diff.rbxdom.cachetextconv", "true")?;
+    println!("configured merge.rbxdom / diff.rbxdom in {scope} Git config");
+    Ok(())
+}
+
+/// Add or drop the `.rbxmerge/` line in an ignore file to match the chosen
+/// driver variant.
+fn sync_stash_ignore(ignore_file: &Path, stash: bool) -> Result<()> {
+    if stash {
+        if append_line_if_missing(ignore_file, ".rbxmerge/")? {
+            println!("ignored .rbxmerge/ via {}", ignore_file.display());
+        }
+    } else if remove_line_if_present(ignore_file, ".rbxmerge/")? {
+        println!(
+            "removed stale .rbxmerge/ ignore from {}",
+            ignore_file.display()
+        );
+    }
+    Ok(())
+}
+
+/// Remove what `install` wrote in the given scope. The committed
+/// `.gitattributes` safe default is left in place either way.
+pub fn uninstall(global: bool) -> Result<ExitCode> {
+    if global {
+        uninstall_global()
+    } else {
+        uninstall_local()
+    }
+}
+
+fn uninstall_local() -> Result<ExitCode> {
+    absolute_git_dir()?;
+
+    remove_driver_config("--local");
 
     let attributes = git_path("info/attributes")?;
     if remove_block(&attributes)? {
@@ -180,9 +249,57 @@ pub fn uninstall(global: bool) -> Result<ExitCode> {
              managed block manually if you no longer want it"
         );
     }
+    if global_install_present() {
+        println!(
+            "note: a machine-wide install is still present — run \
+             `rbx-merge uninstall --global` to remove it"
+        );
+    }
 
     println!("done — this clone no longer uses the rbx-merge drivers");
     Ok(ExitCode::SUCCESS)
+}
+
+/// Does not need to run inside a repository.
+fn uninstall_global() -> Result<ExitCode> {
+    let attributes = global_attributes_path()?;
+
+    remove_driver_config("--global");
+
+    if remove_block(&attributes)? {
+        println!(
+            "removed machine-wide driver activation from {}",
+            attributes.display()
+        );
+    }
+    let excludes = global_excludes_path()?;
+    if remove_line_if_present(&excludes, ".rbxmerge/")? {
+        println!("removed .rbxmerge/ ignore from {}", excludes.display());
+    }
+
+    if git_path("info/attributes")
+        .ok()
+        .is_some_and(|path| contains_managed_block(&path))
+    {
+        println!(
+            "note: this clone's per-clone install is still present — run \
+             `rbx-merge uninstall` to remove it"
+        );
+    }
+
+    println!("done — the machine-wide install is removed (per-clone installs are unaffected)");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Remove the driver-definition sections from the given config scope.
+fn remove_driver_config(scope: &str) {
+    for section in ["merge.rbxdom", "diff.rbxdom"] {
+        if git_ok(&["config", scope, "--remove-section", section]).is_some() {
+            println!("removed {section} from {scope} Git config");
+        } else {
+            println!("{section} not present in {scope} Git config");
+        }
+    }
 }
 
 /// Report whether this clone is set up correctly, and exit non-zero if a
@@ -235,12 +352,14 @@ pub fn doctor() -> Result<ExitCode> {
     // The decisive check: does Git actually resolve `merge=rbxdom` for these
     // paths? This reflects real attribute precedence, so it catches a clone
     // that has the config but is missing the `.git/info/attributes` override.
+    let mut all_active = true;
     for ext in EXTENSIONS {
         let probe = format!("probe.{ext}");
         let attrs = git_ok(&["check-attr", "merge", "diff", "--", &probe]).unwrap_or_default();
         match attr_value(&attrs, "merge").as_deref() {
             Some(value) if value == DRIVER => {
                 report.ok(&format!("semantic merge active for *.{ext}"));
+                continue;
             }
             // `binary` sets -merge -> "unset": safe (Git refuses line-merge)
             // but the semantic driver is not running.
@@ -257,6 +376,34 @@ pub fn doctor() -> Result<ExitCode> {
                 "*.{ext} has no merge attribute — only Git's binary-content heuristic \
                  prevents a line merge — run `rbx-merge install`"
             )),
+        }
+        all_active = false;
+    }
+
+    // A machine-wide install sits in Git's lowest-precedence attributes tier;
+    // surface both its reach and anything overriding it in this clone.
+    if let Some(global_attrs) = global_attributes_path()
+        .ok()
+        .filter(|path| contains_managed_block(path))
+    {
+        let has_local_override = git_path("info/attributes")
+            .ok()
+            .is_some_and(|path| contains_managed_block(&path));
+        if !all_active {
+            report.warn(&format!(
+                "a machine-wide install ({}) is overridden here by committed \
+                 .gitattributes rules — run `rbx-merge install` in this clone to \
+                 activate the drivers",
+                global_attrs.display()
+            ));
+        } else if !has_local_override {
+            report.warn(&format!(
+                "drivers come from the machine-wide install ({}) — it applies to \
+                 every repo on this machine, and any committed .gitattributes rule \
+                 overrides it; repos with the `binary` safe default need a per-clone \
+                 `rbx-merge install`",
+                global_attrs.display()
+            ));
         }
     }
 
@@ -403,12 +550,18 @@ fn first_shell_word(command: &str) -> Option<String> {
     (!word.is_empty()).then_some(word)
 }
 
-/// The body written into `.git/info/attributes` to activate the drivers.
-fn attributes_body() -> String {
-    let mut body = String::from(
+/// The activation body written into `.git/info/attributes` (per clone) or the
+/// global attributes file (machine-wide).
+fn attributes_body(global: bool) -> String {
+    let mut body = String::from(if global {
+        "# Enables the rbx-merge semantic diff and merge drivers for every repo\n\
+         # on this machine. Overridden by committed .gitattributes rules (e.g.\n\
+         # the recommended `binary` safe default), which need a per-clone\n\
+         # `rbx-merge install` instead.\n"
+    } else {
         "# Higher precedence than the committed .gitattributes; enables the\n\
-         # semantic diff and merge drivers for this clone.\n",
-    );
+         # semantic diff and merge drivers for this clone.\n"
+    });
     for ext in EXTENSIONS {
         body.push_str(&format!("*.{ext} merge={DRIVER} diff={DRIVER}\n"));
     }
@@ -554,6 +707,51 @@ fn absolute_git_dir() -> Result<PathBuf> {
 fn git_path(relative: &str) -> Result<PathBuf> {
     let path = git(&["rev-parse", "--git-path", relative])?;
     std::path::absolute(&path).with_context(|| format!("failed to resolve {path}"))
+}
+
+/// The global (per-user) attributes file, resolved by Git itself so it honors
+/// `core.attributesFile`, `XDG_CONFIG_HOME`, and platform home rules.
+fn global_attributes_path() -> Result<PathBuf> {
+    let path = git(&["var", "GIT_ATTR_GLOBAL"]).context(
+        "cannot resolve the global attributes path — \
+         `git var GIT_ATTR_GLOBAL` requires Git 2.43 or newer",
+    )?;
+    if path.is_empty() {
+        bail!("git reports no global attributes path (is HOME set?)");
+    }
+    Ok(PathBuf::from(path))
+}
+
+/// The global excludes file, mirroring Git's resolution: `core.excludesFile`
+/// if set, else `$XDG_CONFIG_HOME/git/ignore`, else `~/.config/git/ignore`.
+/// (`git var` exposes no equivalent of GIT_ATTR_GLOBAL for excludes.)
+fn global_excludes_path() -> Result<PathBuf> {
+    if let Some(path) = git_ok(&["config", "--path", "--get", "core.excludesFile"]) {
+        return Ok(PathBuf::from(path));
+    }
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(|home| PathBuf::from(home).join(".config"))
+        })
+        .context("cannot resolve the global excludes path: XDG_CONFIG_HOME and HOME are unset")?;
+    Ok(config_home.join("git").join("ignore"))
+}
+
+/// Whether `path` contains an rbx-merge managed block.
+fn contains_managed_block(path: &Path) -> bool {
+    fs::read_to_string(path).is_ok_and(|contents| contents.contains(BEGIN))
+}
+
+/// Whether any machine-wide install pieces exist (activation or config).
+fn global_install_present() -> bool {
+    global_attributes_path()
+        .ok()
+        .is_some_and(|path| contains_managed_block(&path))
+        || git_ok(&["config", "--global", "--get", "merge.rbxdom.driver"]).is_some()
 }
 
 /// The absolute path to the working tree's top level.
@@ -721,9 +919,11 @@ mod tests {
 
     #[test]
     fn attributes_body_covers_every_extension() {
-        let body = attributes_body();
-        for ext in EXTENSIONS {
-            assert!(body.contains(&format!("*.{ext} merge={DRIVER} diff={DRIVER}")));
+        for global in [false, true] {
+            let body = attributes_body(global);
+            for ext in EXTENSIONS {
+                assert!(body.contains(&format!("*.{ext} merge={DRIVER} diff={DRIVER}")));
+            }
         }
     }
 

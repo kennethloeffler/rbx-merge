@@ -290,37 +290,40 @@ fn stash_and_resolve_round_trip() {
     );
 }
 
-/// `git init` a scratch repo with isolated global/system config, so `install`
-/// and `doctor` neither read nor write the developer's real `~/.gitconfig`
-/// (which may already define the `rbxdom` drivers).
-fn git_init_isolated(dir: &Path) {
-    let status = Command::new("git")
-        .args(["init", "-q"])
-        .arg(dir)
-        .env("GIT_CONFIG_GLOBAL", dir.join("isolated-gitconfig"))
+/// Apply the isolation env to a command: global/system Git config plus
+/// XDG_CONFIG_HOME, so `install`/`doctor` neither read nor write the
+/// developer's real `~/.gitconfig` or `~/.config/git/attributes` (which may
+/// already define or activate the `rbxdom` drivers).
+fn isolate(cmd: &mut Command, dir: &Path) {
+    cmd.env("GIT_CONFIG_GLOBAL", dir.join("isolated-gitconfig"))
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .status()
-        .expect("git init");
+        .env("XDG_CONFIG_HOME", dir.join("xdg"));
+}
+
+/// `git init` a scratch repo with the isolated config env.
+fn git_init_isolated(dir: &Path) {
+    let mut cmd = Command::new("git");
+    cmd.args(["init", "-q"]).arg(dir);
+    isolate(&mut cmd, dir);
+    let status = cmd.status().expect("git init");
     assert!(status.success(), "git init should succeed");
 }
 
-/// A `rbx-merge` invocation scoped to `dir` with the same isolated Git config,
+/// A `rbx-merge` invocation scoped to `dir` with the isolated config env,
 /// inherited by the `git` subprocesses that `install`/`doctor` spawn.
 fn setup_cmd(dir: &Path) -> Command {
     let mut cmd = Command::new(BIN);
-    cmd.current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", dir.join("isolated-gitconfig"))
-        .env("GIT_CONFIG_SYSTEM", "/dev/null");
+    cmd.current_dir(dir);
+    isolate(&mut cmd, dir);
     cmd
 }
 
-/// A `git` invocation scoped to `dir` with the same isolated config, for test
+/// A `git` invocation scoped to `dir` with the isolated config env, for test
 /// steps like committing and adding worktrees.
 fn git_isolated(dir: &Path) -> Command {
     let mut cmd = Command::new("git");
-    cmd.current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", dir.join("isolated-gitconfig"))
-        .env("GIT_CONFIG_SYSTEM", "/dev/null");
+    cmd.current_dir(dir);
+    isolate(&mut cmd, dir);
     cmd
 }
 
@@ -582,6 +585,97 @@ fn no_stash_install_reverts_stash_pieces() {
     assert!(
         !excludes_rbxmerge(),
         "--no-stash should remove the stale .rbxmerge/ ignore"
+    );
+}
+
+#[test]
+fn global_install_covers_machine_until_committed_rules_override() {
+    let scratch = Scratch::new("global");
+    git_init_isolated(&scratch.dir);
+
+    let install = setup_cmd(&scratch.dir)
+        .args(["install", "--global", "--driver-path"])
+        .arg(BIN)
+        .output()
+        .expect("run install --global");
+    assert!(
+        install.status.success(),
+        "install --global should exit 0, stderr: {}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&install.stdout);
+    assert!(
+        stdout.contains("every Git repo on this machine"),
+        "install --global should print the machine-wide caveat, got:\n{stdout}"
+    );
+
+    // Activation lands in the (isolated) global attributes and ignore files;
+    // nothing is written into the clone itself.
+    let attrs =
+        fs::read_to_string(scratch.dir.join("xdg/git/attributes")).expect("read global attributes");
+    assert!(
+        attrs.contains("*.rbxmx merge=rbxdom diff=rbxdom"),
+        "got:\n{attrs}"
+    );
+    assert!(
+        !scratch.dir.join(".git/info/attributes").exists(),
+        "--global must not write per-clone attributes"
+    );
+    let ignore =
+        fs::read_to_string(scratch.dir.join("xdg/git/ignore")).expect("read global ignore");
+    assert!(ignore.lines().any(|line| line.trim() == ".rbxmerge/"));
+
+    // Doctor sees the drivers active via the machine-wide install and warns
+    // about its caveats.
+    let doctor = setup_cmd(&scratch.dir)
+        .arg("doctor")
+        .output()
+        .expect("run doctor");
+    let stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(doctor.status.success(), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("semantic merge active for *.rbxmx"),
+        "got:\n{stdout}"
+    );
+    assert!(stdout.contains("machine-wide install"), "got:\n{stdout}");
+
+    // A committed safe default outranks the global attributes; doctor explains
+    // that the machine-wide install is being overridden.
+    fs::write(
+        scratch.path(".gitattributes"),
+        "*.rbxl binary\n*.rbxlx binary\n*.rbxm binary\n*.rbxmx binary\n",
+    )
+    .expect("write committed safe default");
+    let doctor = setup_cmd(&scratch.dir)
+        .arg("doctor")
+        .output()
+        .expect("run doctor");
+    let stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(doctor.status.success(), "stdout:\n{stdout}");
+    assert!(stdout.contains("falls back to binary"), "got:\n{stdout}");
+    assert!(stdout.contains("overridden here"), "got:\n{stdout}");
+
+    // uninstall --global reverts exactly the machine-wide pieces.
+    let uninstall = setup_cmd(&scratch.dir)
+        .args(["uninstall", "--global"])
+        .output()
+        .expect("run uninstall --global");
+    assert!(
+        uninstall.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&uninstall.stderr)
+    );
+    let attrs = fs::read_to_string(scratch.dir.join("xdg/git/attributes")).unwrap_or_default();
+    assert!(!attrs.contains("merge=rbxdom"), "got:\n{attrs}");
+    let ignore = fs::read_to_string(scratch.dir.join("xdg/git/ignore")).unwrap_or_default();
+    assert!(!ignore.lines().any(|line| line.trim() == ".rbxmerge/"));
+    let config = git_isolated(&scratch.dir)
+        .args(["config", "--global", "--get", "merge.rbxdom.driver"])
+        .output()
+        .expect("read global config");
+    assert!(
+        !config.status.success(),
+        "global driver config should be gone"
     );
 }
 

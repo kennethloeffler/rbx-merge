@@ -95,9 +95,11 @@ enum Command {
     /// Writes the driver definitions to Git config and a higher-precedence
     /// override into `.git/info/attributes`. Run once per clone.
     Install {
-        /// Write the driver definitions to global (`~/.gitconfig`) rather than
-        /// this repo's local config. The per-clone `.git/info/attributes`
-        /// override is still written either way.
+        /// Install machine-wide instead of for this clone: driver definitions
+        /// go to `~/.gitconfig` and activation to Git's global attributes
+        /// file (requires Git 2.43+). Any committed .gitattributes rule
+        /// overrides it, so repos with the `binary` safe default still need a
+        /// per-clone install.
         #[arg(long)]
         global: bool,
         /// The rbx-merge executable to invoke in the driver commands. Defaults
@@ -112,18 +114,19 @@ enum Command {
         stash: bool,
         /// Also write the safe `binary` defaults into the repo's committed
         /// `.gitattributes` so collaborators fail safe until they run install.
-        #[arg(long)]
+        /// Per-repo by nature, so it cannot be combined with --global.
+        #[arg(long, conflicts_with = "global")]
         write_gitattributes: bool,
     },
     /// Check whether this clone's diff/merge drivers are installed correctly and
     /// whether the committed `.gitattributes` is a safe default.
     Doctor,
-    /// Remove the driver configuration written by `install`: the Git config
-    /// entries, the `.git/info/attributes` override, and the `.rbxmerge/`
-    /// ignore line. The committed `.gitattributes` safe default is left alone.
+    /// Remove what `install` wrote for this clone: the Git config entries, the
+    /// `.git/info/attributes` override, and the `.rbxmerge/` ignore line. The
+    /// committed `.gitattributes` safe default is left alone.
     Uninstall {
-        /// Remove the driver definitions from global (`~/.gitconfig`) rather
-        /// than this repo's local config.
+        /// Remove the machine-wide install (global config, global attributes,
+        /// and the global `.rbxmerge/` ignore) instead of this clone's.
         #[arg(long)]
         global: bool,
     },

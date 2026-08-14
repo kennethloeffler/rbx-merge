@@ -28,10 +28,10 @@ rbx-merge uninstall [--global]
 Run once per clone:
 
 ```sh
-rbx-merge install          # this clone; --global keeps the driver definitions
-                           # in ~/.gitconfig instead of this repo's config
+rbx-merge install          # this clone (--global: every repo on this machine,
+                           # see Machine-wide install below)
 rbx-merge doctor           # verify the current clone at any time
-rbx-merge uninstall        # revert install for this clone
+rbx-merge uninstall        # revert install (--global: revert the machine-wide one)
 ```
 
 ### Why a committed `.gitattributes` isn't enough
@@ -60,7 +60,7 @@ Until they run it, you do not want Git falling back to a line-based merge of the
 
 ### Under the hood
 
-`install` writes the following Git config (`--local` by default, `--global` to define the drivers once per machine. The `.git/info/attributes` override is always per clone, so `install` must still be run in each clone):
+`install` writes the following Git config to the repo's local config, alongside the `.git/info/attributes` override shown above:
 
 ```ini
 [diff "rbxdom"]
@@ -75,6 +75,15 @@ Until they run it, you do not want Git falling back to a line-based merge of the
 The driver stashes conflicted merges under `.rbxmerge/` (which `install` gitignores locally) so conflict state survives Git discarding its temporaries. See [Conflict Resolution](#conflict-resolution). Pass `install --no-stash` to use a plain driver without the stash.
 
 For worktrees: `install` writes the override to the repository's shared `.git/info/attributes`, so it applies to every worktree. `rbx-merge uninstall` reverts the per-clone pieces (config entries, attributes override, and `.rbxmerge/` ignore) but leaves any committed `.gitattributes` in place.
+
+### Machine-wide install
+
+`rbx-merge install --global` (Git ≥ 2.43) covers every repo on this machine in one step: the driver definitions go to `~/.gitconfig` and the activation to Git's global attributes file (`core.attributesFile`, defaulting to `~/.config/git/attributes`). Nothing repo-local is written, and `rbx-merge uninstall --global` reverts exactly this set; the two scopes never mix.
+
+Two caveats, which `install --global` and `doctor` also print:
+
+- It applies to every Git repo on this machine, including clones of projects that never adopted rbx-merge.
+- The global attributes file is Git's lowest-precedence tier: any committed `.gitattributes` rule overrides it. In particular, repos committing the recommended `binary` safe default still need a per-clone `rbx-merge install`, whose `.git/info/attributes` override outranks the committed file. `doctor` reports which case a clone is in.
 
 ## Conflict Resolution
 

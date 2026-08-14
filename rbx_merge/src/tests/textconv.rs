@@ -5,7 +5,7 @@ use rbx_dom_weak::{InstanceBuilder, WeakDom};
 use rbx_types::{UniqueId, Variant};
 
 use super::common;
-use crate::{TextconvOptions, textconv, textconv_to};
+use crate::{textconv, textconv_to, TextconvOptions};
 
 /// The renderer drops noise that bloats diffs — properties at their class default
 /// and the volatile `UniqueId` — while keeping properties set to a real value,
@@ -93,6 +93,23 @@ fn textconv_snapshots_internal_refs() -> Result<()> {
     let text = textconv(&bytes, Some(&path), TextconvOptions::all())?;
 
     insta::assert_snapshot!("ref_child_xml_textconv", text);
+    Ok(())
+}
+
+#[test]
+fn textconv_snapshots_unique_id() -> Result<()> {
+    let unique_id = UniqueId::new(0x1234_abcd, 0x89ab_cdef, 0x0123_4567_89ab_cdef);
+    let part = InstanceBuilder::new("Part")
+        .with_name("P")
+        .with_property("UniqueId", Variant::UniqueId(unique_id));
+    let dom = WeakDom::new(InstanceBuilder::new("DataModel").with_child(part));
+
+    let mut bytes = Vec::new();
+    rbx_binary::to_writer(&mut bytes, &dom, dom.root().children())?;
+    let path = Path::new("unique-id.rbxm");
+
+    let text = textconv(&bytes, Some(path), TextconvOptions::all())?;
+    insta::assert_snapshot!("unique_id_textconv", text);
     Ok(())
 }
 

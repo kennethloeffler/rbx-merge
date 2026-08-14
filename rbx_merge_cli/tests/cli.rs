@@ -290,6 +290,253 @@ fn stash_and_resolve_round_trip() {
     );
 }
 
+/// `git init` a scratch repo with isolated global/system config, so `install`
+/// and `doctor` neither read nor write the developer's real `~/.gitconfig`
+/// (which may already define the `rbxdom` drivers).
+fn git_init_isolated(dir: &Path) {
+    let status = Command::new("git")
+        .args(["init", "-q"])
+        .arg(dir)
+        .env("GIT_CONFIG_GLOBAL", dir.join("isolated-gitconfig"))
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .status()
+        .expect("git init");
+    assert!(status.success(), "git init should succeed");
+}
+
+/// A `rbx-merge` invocation scoped to `dir` with the same isolated Git config,
+/// inherited by the `git` subprocesses that `install`/`doctor` spawn.
+fn setup_cmd(dir: &Path) -> Command {
+    let mut cmd = Command::new(BIN);
+    cmd.current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", dir.join("isolated-gitconfig"))
+        .env("GIT_CONFIG_SYSTEM", "/dev/null");
+    cmd
+}
+
+/// A `git` invocation scoped to `dir` with the same isolated config, for test
+/// steps like committing and adding worktrees.
+fn git_isolated(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", dir.join("isolated-gitconfig"))
+        .env("GIT_CONFIG_SYSTEM", "/dev/null");
+    cmd
+}
+
+#[test]
+fn install_then_doctor_reports_healthy() {
+    let scratch = Scratch::new("install");
+    git_init_isolated(&scratch.dir);
+
+    // Point the driver at the test binary so doctor's PATH probe resolves it.
+    let install = setup_cmd(&scratch.dir)
+        .args(["install", "--write-gitattributes", "--driver-path"])
+        .arg(BIN)
+        .output()
+        .expect("run install");
+    assert!(
+        install.status.success(),
+        "install should exit 0, stderr: {}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+
+    // The committed safe default and the per-clone override both landed.
+    let committed =
+        fs::read_to_string(scratch.path(".gitattributes")).expect("read .gitattributes");
+    assert!(committed.contains("*.rbxmx binary"), "got:\n{committed}");
+    let override_path = scratch.dir.join(".git/info/attributes");
+    let overrides = fs::read_to_string(&override_path).expect("read info/attributes");
+    assert!(
+        overrides.contains("*.rbxmx merge=rbxdom diff=rbxdom"),
+        "got:\n{overrides}"
+    );
+
+    let doctor = setup_cmd(&scratch.dir)
+        .arg("doctor")
+        .output()
+        .expect("run doctor");
+    let stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(
+        doctor.status.success(),
+        "doctor should exit 0 after install, stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("semantic merge active for *.rbxmx"),
+        "got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("marks Roblox files `binary`"),
+        "got:\n{stdout}"
+    );
+
+    // Re-running install is a no-op that still exits cleanly (idempotent).
+    let again = setup_cmd(&scratch.dir)
+        .args(["install", "--write-gitattributes", "--driver-path"])
+        .arg(BIN)
+        .output()
+        .expect("run install again");
+    assert!(again.status.success());
+    assert_eq!(
+        fs::read_to_string(&override_path).unwrap(),
+        overrides,
+        "second install must not change .git/info/attributes"
+    );
+}
+
+#[test]
+fn doctor_flags_uninstalled_repo() {
+    let scratch = Scratch::new("uninstalled");
+    git_init_isolated(&scratch.dir);
+
+    let doctor = setup_cmd(&scratch.dir)
+        .arg("doctor")
+        .output()
+        .expect("run doctor");
+    assert!(
+        !doctor.status.success(),
+        "doctor should exit non-zero when nothing is installed"
+    );
+    let stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(
+        stdout.contains("merge driver not configured"),
+        "got:\n{stdout}"
+    );
+    assert!(stdout.contains("would be line-merged"), "got:\n{stdout}");
+}
+
+#[test]
+fn install_reaches_linked_worktrees() {
+    let scratch = Scratch::new("worktree");
+    let main = scratch.path("main");
+    fs::create_dir_all(&main).expect("create main dir");
+    git_init_isolated(&main);
+    let committed = git_isolated(&main)
+        .args(["-c", "user.email=rbx@example.com", "-c", "user.name=rbx"])
+        .args(["commit", "--allow-empty", "-qm", "init"])
+        .status()
+        .expect("git commit");
+    assert!(committed.success(), "commit should succeed");
+    let wt = scratch.path("wt");
+    let added = git_isolated(&main)
+        .args(["worktree", "add", "-q"])
+        .arg(&wt)
+        .status()
+        .expect("git worktree add");
+    assert!(added.success(), "worktree add should succeed");
+
+    let install = setup_cmd(&wt)
+        .args(["install", "--driver-path"])
+        .arg(BIN)
+        .output()
+        .expect("run install");
+    assert!(
+        install.status.success(),
+        "install should exit 0, stderr: {}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+
+    // The override must land in the shared common dir — the per-worktree
+    // gitdir (.git/worktrees/<name>) is never consulted for info/attributes.
+    let shared =
+        fs::read_to_string(main.join(".git/info/attributes")).expect("read shared info/attributes");
+    assert!(
+        shared.contains("*.rbxmx merge=rbxdom diff=rbxdom"),
+        "got:\n{shared}"
+    );
+
+    let doctor = setup_cmd(&wt).arg("doctor").output().expect("run doctor");
+    let stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(
+        doctor.status.success(),
+        "doctor should exit 0 in the worktree, stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("semantic merge active for *.rbxmx"),
+        "got:\n{stdout}"
+    );
+}
+
+#[test]
+fn install_quotes_spaced_driver_path() {
+    let scratch = Scratch::new("spaced");
+    git_init_isolated(&scratch.dir);
+    let spaced_dir = scratch.dir.join("spaced dir");
+    fs::create_dir_all(&spaced_dir).expect("create spaced dir");
+    let exe_name = if cfg!(windows) {
+        "rbx-merge.exe"
+    } else {
+        "rbx-merge"
+    };
+    let spaced_bin = spaced_dir.join(exe_name);
+    fs::copy(BIN, &spaced_bin).expect("copy binary into spaced dir");
+
+    let install = setup_cmd(&scratch.dir)
+        .args(["install", "--driver-path"])
+        .arg(&spaced_bin)
+        .output()
+        .expect("run install");
+    assert!(
+        install.status.success(),
+        "install should accept a spaced driver path, stderr: {}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+
+    // The stored command is shell-quoted so Git's sh parses it back whole.
+    let config = git_isolated(&scratch.dir)
+        .args(["config", "--get", "merge.rbxdom.driver"])
+        .output()
+        .expect("read merge driver config");
+    let driver = String::from_utf8_lossy(&config.stdout);
+    assert!(driver.starts_with('\''), "got: {driver}");
+
+    // Doctor un-quotes the executable and finds it runnable.
+    let doctor = setup_cmd(&scratch.dir)
+        .arg("doctor")
+        .output()
+        .expect("run doctor");
+    let stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(stdout.contains("executable found"), "got:\n{stdout}");
+}
+
+#[test]
+fn uninstall_reverts_install() {
+    let scratch = Scratch::new("uninst");
+    git_init_isolated(&scratch.dir);
+    let install = setup_cmd(&scratch.dir)
+        .args(["install", "--stash", "--driver-path"])
+        .arg(BIN)
+        .output()
+        .expect("run install");
+    assert!(install.status.success());
+
+    let uninstall = setup_cmd(&scratch.dir)
+        .arg("uninstall")
+        .output()
+        .expect("run uninstall");
+    assert!(
+        uninstall.status.success(),
+        "uninstall should exit 0, stderr: {}",
+        String::from_utf8_lossy(&uninstall.stderr)
+    );
+
+    let config = git_isolated(&scratch.dir)
+        .args(["config", "--get", "merge.rbxdom.driver"])
+        .output()
+        .expect("read merge driver config");
+    assert!(
+        !config.status.success(),
+        "merge.rbxdom.driver should be removed"
+    );
+    let attrs = fs::read_to_string(scratch.dir.join(".git/info/attributes")).unwrap_or_default();
+    assert!(!attrs.contains("merge=rbxdom"), "got:\n{attrs}");
+    let exclude = fs::read_to_string(scratch.dir.join(".git/info/exclude")).unwrap_or_default();
+    assert!(
+        !exclude.lines().any(|line| line.trim() == ".rbxmerge/"),
+        "got:\n{exclude}"
+    );
+}
+
 #[test]
 fn textconv_prints_semantic_text() {
     let scratch = Scratch::new("textconv");

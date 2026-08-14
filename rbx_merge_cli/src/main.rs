@@ -12,6 +12,8 @@ use rbx_merge::{
     TextconvOptions, merge_files, textconv_to,
 };
 
+mod setup;
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum TakeSide {
     Base,
@@ -32,6 +34,7 @@ impl From<TakeSide> for Side {
 #[derive(Debug, Parser)]
 #[command(name = "rbx-merge")]
 #[command(about = "Semantic diff and three-way merge for Roblox files")]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -87,6 +90,41 @@ enum Command {
         /// UniqueId. By default these are omitted to keep diffs small.
         #[arg(long)]
         all_properties: bool,
+    },
+    /// Configure the current clone to use the rbx-merge diff and merge drivers.
+    /// Writes the driver definitions to Git config and a higher-precedence
+    /// override into `.git/info/attributes`. Run once per clone.
+    Install {
+        /// Write the driver definitions to global (`~/.gitconfig`) rather than
+        /// this repo's local config. The per-clone `.git/info/attributes`
+        /// override is still written either way.
+        #[arg(long)]
+        global: bool,
+        /// The rbx-merge executable to invoke in the driver commands. Defaults
+        /// to `rbx-merge` (resolved on PATH); shell-quoted as needed, so spaced
+        /// paths are fine.
+        #[arg(long, default_value = "rbx-merge")]
+        driver_path: String,
+        /// Use the stash-based merge driver so conflicts survive Git discarding
+        /// its temporaries, and locally ignore the resulting `.rbxmerge/` dir.
+        #[arg(long)]
+        stash: bool,
+        /// Also write the safe `binary` defaults into the repo's committed
+        /// `.gitattributes` so collaborators fail safe until they run install.
+        #[arg(long)]
+        write_gitattributes: bool,
+    },
+    /// Check whether this clone's diff/merge drivers are installed correctly and
+    /// whether the committed `.gitattributes` is a safe default.
+    Doctor,
+    /// Remove the driver configuration written by `install`: the Git config
+    /// entries, the `.git/info/attributes` override, and the `.rbxmerge/`
+    /// ignore line. The committed `.gitattributes` safe default is left alone.
+    Uninstall {
+        /// Remove the driver definitions from global (`~/.gitconfig`) rather
+        /// than this repo's local config.
+        #[arg(long)]
+        global: bool,
     },
 }
 
@@ -222,6 +260,19 @@ fn run() -> Result<ExitCode> {
             let result = write_diff(&mut out, &old, &old_bytes, &new, &new_bytes, options);
             finish_stream(result, &mut out)
         }
+        Command::Install {
+            global,
+            driver_path,
+            stash,
+            write_gitattributes,
+        } => setup::install(&setup::InstallOptions {
+            global,
+            driver_path,
+            stash,
+            write_gitattributes,
+        }),
+        Command::Doctor => setup::doctor(),
+        Command::Uninstall { global } => setup::uninstall(global),
     }
 }
 

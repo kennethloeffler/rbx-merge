@@ -5,7 +5,7 @@ use rbx_dom_weak::{InstanceBuilder, WeakDom};
 use rbx_types::{UniqueId, Variant};
 
 use super::common;
-use crate::{textconv, textconv_to, TextconvOptions};
+use crate::{TextconvOptions, textconv, textconv_to};
 
 /// The renderer drops noise that bloats diffs — properties at their class default
 /// and the volatile `UniqueId` — while keeping properties set to a real value,

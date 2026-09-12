@@ -72,7 +72,7 @@ A separate installation step is necessary for each contributor because for secur
 
 After setup, `git diff`, `git log -p`, and `git show` render Roblox files as the deterministic semantic text shown above. `git merge`, `git rebase`, and `git cherry-pick` run the semantic merge; when both sides' edits don't conflict, the merge completes cleanly.
 
-By extension, this should automatically work with git clients like GitHub Desktop or GitKraken. However, some clients bypass git's textconv machinery entirely and may require further configuration to display smenatic text diffs.
+By extension, this should automatically work with git clients like GitHub Desktop or GitKraken. However, some clients bypass git's textconv machinery entirely and may require further configuration to display semantic text diffs.
 
 You can also invoke the tooling directly, outside of git:
 
